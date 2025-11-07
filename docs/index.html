@@ -1,27 +1,37 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
 
 <head>
-    <meta charset="utf-8" />
-    <title>iTowns XR</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta charset="UTF-8">
+    <title>Simple globe with iTowns</title>
     <style>
-        html,
-        body,
-        #viewerDiv {
+        html {
             height: 100%;
-            margin: 0
+        }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            height: 100%;
+        }
+
+        #viewerDiv {
+            margin: auto;
+            height: 100%;
+            width: 100%;
+            padding: 0;
+        }
+
+        canvas {
+            display: block
         }
     </style>
-
-    <script type="importmap">
-  { "imports": { "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.174/examples/jsm/" } }
-  </script>
-  <script type="module" crossorigin src="/itowns-stereographic-shader/assets/index-Co7D3k5D.js"></script>
+  <script type="module" crossorigin src="/itowns-stereographic-shader/assets/index-DlYNK-kh.js"></script>
 </head>
 
 <body>
     <div id="viewerDiv"></div>
+    <!-- ✅ module entry; Vite resolves imports -->
 </body>
 
 </html>
