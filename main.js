@@ -1,95 +1,28 @@
 import * as itowns from 'itowns';
-
 import * as THREE from 'three';
 
-function makeRippleMaterialLinear(baseMat) {
-    const mat = baseMat.clone();
-    mat.transparent = true;
-    mat.depthWrite = false;
-    mat.renderOrder = 10;
+// Import Fat Lines modules
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 
-    mat.onBeforeCompile = (shader) => {
-        shader.uniforms.uTime = { value: 0.0 };
-        shader.fragmentShader =
-            'uniform float uTime;\n' + shader.fragmentShader;
-
-        shader.vertexShader =
-            'uniform float uTime;\n' + shader.vertexShader;
-
-        shader.vertexShader = shader.vertexShader.replace(
-            '#include <begin_vertex>',
-            `
-        #include <begin_vertex>
-        // exaggerated vertical ripple for testing
-        float h = sin(uTime * 4.0 + position.x * 0.01 + position.y * 0.01) * 50.0;
-        transformed.z += h;
-        `
-        );
-
-        mat.userData.shader = shader;
-    };
-
-    return mat;
-}
-
-function enableRippleShaderLiveLinear(view, layer, makeRippleMaterial) {
-    let time = 0;
-    view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, (dt = 16.7) => {
-        time += dt * 0.001;
-
-        let changed = false;
-        let patched = false;
-
-        layer.object3d.traverse((obj) => {
-            const isRenderable = obj.isMesh || obj.isLine;
-            if (!isRenderable || !obj.material) return;
-
-            const mat = obj.material;
-
-            // already patched?
-            if (mat.userData && mat.userData.ripplePatched) return;
-
-            // if this is an array (multi-material), patch each
-            if (Array.isArray(mat)) {
-                for (let i = 0; i < mat.length; i++) {
-                    if (!mat[i].userData?.ripplePatched) {
-                        mat[i] = makeRippleMaterial(mat[i]);
-                        mat[i].userData.ripplePatched = true;
-                        changed = true;
-                    }
-                }
-            } else {
-                const newMat = makeRippleMaterial(mat);
-                newMat.userData.ripplePatched = true;
-                obj.material = newMat;
-                changed = true;
-            }
-        });
-
-        // only update when anything changes, including camera movement
-        // if (changed) {
-        //     view.notifyChange(layer);
-        // }
-
-        // change the time uniform
-        layer.object3d.traverse((obj) => {
-            const shader = obj.material?.userData?.shader;
-            if (shader) {
-                shader.uniforms.uTime.value = time;
-            }
-        });
-        // update every frame (for continuous animations)
-        view.notifyChange(layer);
-    });
-}
+// ----------------------------------------------------------------------------
+// 1. SETUP VIEW
+// ----------------------------------------------------------------------------
 
 const viewerDiv = document.getElementById('viewerDiv');
 const placement = {
     coord: new itowns.Coordinates('EPSG:4326', 4.768, 45.537),
     range: 5000,
+    tilt: 80,
+    heading: 0
 };
 const view = new itowns.GlobeView(viewerDiv, placement);
+const RoadFatLineRoot = new THREE.Group();
+RoadFatLineRoot.name = 'RoadFatLines';
+view.scene.add(RoadFatLineRoot);
 
+// Elevation
 const elevationSource = new itowns.WMTSSource({
     url: 'https://data.geopf.fr/wmts?',
     crs: 'EPSG:4326',
@@ -98,15 +31,12 @@ const elevationSource = new itowns.WMTSSource({
     format: 'image/x-bil;bits=32',
     zoom: { min: 2, max: 10 }
 });
-
 const elevationLayer = new itowns.ElevationLayer('MNT_WORLD', {
     source: elevationSource,
 });
-view.addLayer(elevationLayer).then(() => {
-    console.log('Elevation layer added');
-    view.notifyChange(true);
-});
+view.addLayer(elevationLayer);
 
+// Orthophoto
 const orthoSource = new itowns.WMTSSource({
     url: 'https://data.geopf.fr/wmts?',
     crs: 'EPSG:3857',
@@ -114,437 +44,1032 @@ const orthoSource = new itowns.WMTSSource({
     tileMatrixSet: 'PM',
     format: 'image/jpeg',
 });
-
 const orthoLayer = new itowns.ColorLayer('Ortho', {
     source: orthoSource,
 });
+view.addLayer(orthoLayer);
 
-view.addLayer(orthoLayer).then(() => {
-    console.log('Ortho layer added');
-    view.notifyChange(true);
-});
+// ----------------------------------------------------------------------------
+// 2. ROADS CONFIGURATION
+// ----------------------------------------------------------------------------
 
-// Add geometry layer with WFS source
-const batiSource = new itowns.WFSSource({
-    url: 'https://data.geopf.fr/wfs/ows?',
-    version: '2.0.0',
-    typeName: 'BDTOPO_V3:batiment',        // <- updated namespace
-    crs: 'EPSG:4326',
-    format: 'application/json',
-    // extent: {
-    //     west: 4.1,
-    //     east: 4.9,
-    //     south: 45.6,
-    //     north: 45.8,
-    // },
-    zoom: { min: 13, max: 18 },            // request when fairly zoomed in
-});
+const ROAD_COLOR = {
+    'Type autoroutier': '#2E86FF',
+    'Route à 2 chaussées': '#FF4D4D',
+    'Route à 1 chaussée': '#FFC400',
+    'Bretelle': '#00C8FF',
+    'Rond-point': '#BBBBBB',
+    'Chemin': '#f6ff75',
+    'Route empierrée': '#FF9100',
+    'Sentier': '#00E676',
+    'Escalier': '#FFFFFF',
+};
 
-let read_once = false;
+// Base widths (relative importance)
+const ROAD_WIDTH_BASE = {
+    'Type autoroutier': 10,
+    'Route à 2 chaussées': 8,
+    'Route à 1 chaussée': 5,
+    'Bretelle': 4,
+    'Rond-point': 6,
+    'Chemin': 2,
+    'Route empierrée': 2,
+    'Sentier': 1.5,
+    'Escalier': 1,
+};
 
-// simple extruded buildings
-const batiLayer = new itowns.FeatureGeometryLayer('BDTOPO_Buildings', {
-    source: batiSource,
-    zoom: { min: 14 },
-    style: {
-        fill: {
-            color: (p) => {
-                // if (!read_once) {
-                //     console.log('Building properties example:', p);
-                //     read_once = true;
-                // }
-                // console.log('Building props:', p);
-                return 0xffa500;
-            },
-            base_altitude: (p) => p.altitude_minimale_sol,
-            extrusion_height: (p) => (p.hauteur || p.z_max || 0) - (p.z_min || 0),
+// Global State
+const RoadGlobalState = {
+    visible: true,
+    widthMultiplier: 2.0, // Default to 2.0x for initial visibility
+    useWorldUnits: false,
+    depthTest: true,      // If true: Default Mode (Z-fighting fix). If false: Always On Top (Ghost Mode).
+    altitudeOffset: 5.0,
+    resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
+    useProjection: true,
+    cullBackfaces: false,
+    disableFrustumCulling: false,
+};
+
+// ----------------------------------------------------------------------------
+// 2b. SPHERE / STEREOGRAPHIC PROJECTION STATE
+// ----------------------------------------------------------------------------
+
+const SphereProjectionState = {
+    controller: null,
+};
+const StereoUniforms = {
+    uSphereCenter: { value: new THREE.Vector3() },
+    uSphereR: { value: 1.0 },
+    uProjectionStrength: { value: 0.0 },
+    uCameraPos: { value: new THREE.Vector3() },
+    uCullBackfaces: { value: 0.0 },
+};
+
+const RoadFatLines = new Set();
+
+function makeSphereController(view, {
+    radius = 1000,
+    offset01 = 1.0,
+    opacity = 0.5,
+    color = 0xff0000,
+} = {}) {
+    const geom = new THREE.SphereGeometry(1, 32, 16);
+    const mat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.renderOrder = 20;
+    view.scene.add(mesh);
+
+    const state = {
+        groundECEF: new THREE.Vector3(),
+        hasGround: false,
+        radius,
+        offset01,
+    };
+
+    function updateTransform() {
+        if (!state.hasGround) return;
+
+        const normal = state.groundECEF.clone().normalize();
+        const lift = state.radius * (1.0 - state.offset01);
+        const center = state.groundECEF.clone().addScaledVector(normal, lift);
+
+        mesh.position.copy(center);
+        mesh.scale.setScalar(state.radius);
+
+        mesh.lookAt(new THREE.Vector3(0, 0, 0));
+        mesh.rotateX(Math.PI / 2);
+        view.notifyChange(true);
+    }
+
+    return {
+        mesh,
+        hasGround() {
+            return state.hasGround;
         },
-    },
+        setGroundFromWorld(vec3) {
+            state.groundECEF.copy(vec3);
+            state.hasGround = true;
+            updateTransform();
+        },
+        setRadius(meters) {
+            state.radius = Math.max(1, +meters);
+            updateTransform();
+        },
+        setOffset01(t) {
+            state.offset01 = Math.min(1, Math.max(0, +t));
+            updateTransform();
+        },
+        setOpacity(a) {
+            mat.opacity = Math.min(1, Math.max(0, +a));
+            view.notifyChange(true);
+        },
+        setColor(hex) {
+            mat.color.set(hex);
+            view.notifyChange(true);
+        },
+    };
+}
+
+function initSphereAtLookAt(view, sphereCtl) {
+    const c = view.controls.getLookAtCoordinate();
+    const groundECEF = c.as(view.referenceCrs);
+    sphereCtl.setGroundFromWorld(new THREE.Vector3(groundECEF.x, groundECEF.y, groundECEF.z));
+}
+
+function bindSpherePicking(viewerDiv, view, sphereCtl, toggleKey = 's') {
+    let pickMode = false;
+    viewerDiv.addEventListener('keydown', (event) => {
+        if (event.key === toggleKey) pickMode = true;
+    });
+    viewerDiv.addEventListener('keyup', (event) => {
+        if (event.key === toggleKey) pickMode = false;
+    });
+    viewerDiv.addEventListener('click', (event) => {
+        if (!pickMode) return;
+        const picked = view.getPickingPositionFromDepth(view.eventToViewCoords(event));
+        if (picked) sphereCtl.setGroundFromWorld(picked);
+    });
+}
+
+function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.0, opacity: 0.5 }) {
+    const box = document.createElement('div');
+    Object.assign(box.style, {
+        position: 'absolute',
+        left: '10px',
+        top: '10px',
+        zIndex: 20,
+        background: '#313336bb',
+        border: '1px solid #222',
+        borderRadius: '7px',
+        padding: '8px 10px',
+        color: '#fff',
+        font: '13px/1.2 Arial, sans-serif',
+        minWidth: '220px',
+    });
+    box.innerHTML = `
+    <div style="font-weight:700;margin-bottom:6px;">Projection sphere</div>
+    <label>Radius (m)
+      <input id="sp-r" type="range" min="10" max="20000" step="10" value="${init.radius}"/>
+    </label>
+    <div id="sp-rv" style="opacity:.8;margin-bottom:6px;">${init.radius}</div>
+
+    <label>Offset (0..1)
+      <input id="sp-o" type="range" min="0" max="1" step="0.01" value="${init.offset01}"/>
+    </label>
+    <div id="sp-ov" style="opacity:.8;margin-bottom:6px;">${init.offset01}</div>
+
+    <label>Opacity
+      <input id="sp-a" type="range" min="0" max="1" step="0.01" value="${init.opacity}"/>
+    </label>
+    <div id="sp-av" style="opacity:.8;margin-bottom:6px;">${init.opacity}</div>
+
+    <div style="display:flex;gap:6px;margin-top:8px;">
+      <button id="sp-center" style="flex:1;background:#313336bb;border:1px solid #222;border-radius:6px;color:#fff;height:28px;">Place @ center</button>
+      <button id="sp-pick"   style="flex:1;background:#313336bb;border:1px solid #222;border-radius:6px;color:#fff;height:28px;">Pick (S)</button>
+    </div>
+  `;
+    document.body.appendChild(box);
+
+    const r = box.querySelector('#sp-r');
+    const o = box.querySelector('#sp-o');
+    const a = box.querySelector('#sp-a');
+    const rv = box.querySelector('#sp-rv');
+    const ov = box.querySelector('#sp-ov');
+    const av = box.querySelector('#sp-av');
+    const bCenter = box.querySelector('#sp-center');
+    const bPick = box.querySelector('#sp-pick');
+
+    sphereCtl.setRadius(+r.value);
+    sphereCtl.setOffset01(+o.value);
+    sphereCtl.setOpacity(+a.value);
+
+    r.oninput = () => { rv.textContent = r.value; sphereCtl.setRadius(+r.value); };
+    o.oninput = () => { ov.textContent = o.value; sphereCtl.setOffset01(+o.value); };
+    a.oninput = () => { av.textContent = a.value; sphereCtl.setOpacity(+a.value); };
+
+    bCenter.onclick = () => {
+        const c = view.controls.getLookAtCoordinate();
+        const g = c.as(view.referenceCrs);
+        sphereCtl.setGroundFromWorld(new THREE.Vector3(g.x, g.y, g.z));
+    };
+
+    let picking = false;
+    const setButton = (active) => {
+        bPick.style.background = active ? '#222' : '#313336bb';
+    };
+    viewerDiv.addEventListener('keydown', (event) => {
+        if (event.key === 's') {
+            picking = true;
+            setButton(true);
+        }
+    });
+    viewerDiv.addEventListener('keyup', (event) => {
+        if (event.key === 's') {
+            picking = false;
+            setButton(false);
+        }
+    });
+
+    return box;
+}
+
+const sphereCtl = makeSphereController(view, {
+    radius: 1000,
+    offset01: 1.0,
+    opacity: 0.54,
+    color: 0xff0000,
+});
+SphereProjectionState.controller = sphereCtl;
+
+view.addEventListener(itowns.GLOBE_VIEW_EVENTS.GLOBE_INITIALIZED, () => {
+    initSphereAtLookAt(view, sphereCtl);
+    bindSpherePicking(viewerDiv, view, sphereCtl, 's');
+    createSphereWidget(view, sphereCtl, { radius: 1000, offset01: 1.0, opacity: 0.54 });
 });
 
-// view.addLayer(batiLayer).then(() => {
-//     console.log('BDTOPO_Buildings layer added');
-//     // timeout
-//     setTimeout(() => {
-//         enableRippleShaderLive(view, batiLayer, makeRippleMaterial);
-//     }, 1000);
-// });
+function makeStereoProjectMaterial(mat) {
+    if (!mat || mat.userData?.stereoPatched) return mat;
+
+    mat.onBeforeCompile = (shader) => {
+        shader.uniforms.uSphereCenter = StereoUniforms.uSphereCenter;
+        shader.uniforms.uSphereR = StereoUniforms.uSphereR;
+        shader.uniforms.uProjectionStrength = StereoUniforms.uProjectionStrength;
+        shader.uniforms.uCameraPos = StereoUniforms.uCameraPos;
+        shader.uniforms.uCullBackfaces = StereoUniforms.uCullBackfaces;
+
+        let vs = shader.vertexShader;
+        const inject = /* glsl */`
+    uniform vec3  uSphereCenter;
+    uniform float uSphereR;
+    uniform float uProjectionStrength;
+    uniform vec3  uCameraPos;
+    uniform float uCullBackfaces;
+    mat3 basisFromUp(vec3 up){
+      vec3 n = normalize(up);
+      vec3 a = (abs(n.y) < 0.99) ? vec3(0.0,1.0,0.0) : vec3(1.0,0.0,0.0);
+      vec3 x = normalize(cross(a, n));
+      vec3 z = cross(n, x);
+      return mat3(x, n, z);
+    }
+    vec3 terrainToSphere(vec3 s){
+      float h_inv = 0.5 - s.y;
+      float hh = h_inv * h_inv;
+      float ss = s.x * s.x;
+      float tt = s.z * s.z;
+      float lower = hh - 2.0 * h_inv + ss + tt + 1.0;
+      float x = ((1.0 - h_inv) * s.x) / lower;
+      float y = 0.5 - (ss + tt) / lower;
+      float z = ((1.0 - h_inv) * s.z) / lower;
+      return vec3(x, y, z);
+    }
+    vec3 inverseStereoProject(vec3 wp){
+      if (uProjectionStrength <= 0.0) return wp;
+      float R = uSphereR;
+      if (R <= 0.0) return wp;
+      R = max(R, 1e-3);
+      vec3  C = uSphereCenter;
+      float d = distance(wp, C);
+      if (d <= R) return wp;
+      mat3 B = basisFromUp(C);
+      vec3 s = transpose(B) * ((C - wp) / (2.0*R));
+      vec3 q = terrainToSphere(s);
+      return C - (B * (q * (2.0*R)));
+    }
+
+    bool shouldCullHemisphere(vec3 originalWp){
+      if (uCullBackfaces <= 0.5 || uProjectionStrength <= 0.0) return false;
+      float R = uSphereR;
+      if (R <= 0.0) return false;
+      float d = distance(originalWp, uSphereCenter);
+      if (d <= R + 1e-3) return false;
+      vec3 normal = normalize(originalWp - uSphereCenter);
+      vec3 camDirFromCenter = normalize(uCameraPos - uSphereCenter);
+      return dot(normal, camDirFromCenter) > 0.0;
+    }
+  `;
+
+        if (mat.isLineMaterial === true) {
+            vs = inject + vs;
+            vs = vs.replace(
+                /vec4\s+start\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceStart\s*,\s*1\.0\s*\)\s*;/,
+                `
+    vec3 wpStart = (modelMatrix * vec4( instanceStart, 1.0 )).xyz;
+    vec3 pStart  = inverseStereoProject(wpStart);
+    vec4 start;
+  `
+            );
+            vs = vs.replace(
+                /vec4\s+end\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceEnd\s*,\s*1\.0\s*\)\s*;/,
+                `
+    vec3 wpEnd = (modelMatrix * vec4( instanceEnd, 1.0 )).xyz;
+    vec3 pEnd  = inverseStereoProject(wpEnd);
+    vec4 end;
+    bool cullSegment = shouldCullHemisphere(wpStart) || shouldCullHemisphere(wpEnd);
+    if (cullSegment) {
+      start = vec4(1e9, 1e9, 1e9, 1.0);
+      end = vec4(1e9, 1e9, 1e9, 1.0);
+    } else {
+      start = viewMatrix * vec4( pStart, 1.0 );
+      end   = viewMatrix * vec4( pEnd, 1.0 );
+    }
+  `
+            );
+            shader.vertexShader = vs;
+        } else if (mat.isLineBasicMaterial === true) {
+            shader.vertexShader =
+                inject +
+                shader.vertexShader.replace(
+                    '#include <project_vertex>',
+                    `
+          vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          vec3 p = inverseStereoProject(wp);
+          if (shouldCullHemisphere(wp)) {
+            gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
+          } else {
+            vec4 mv = viewMatrix * vec4(p, 1.0);
+            gl_Position = projectionMatrix * mv;
+          }
+        `
+                );
+        } else if (mat.isMeshBasicMaterial || mat.isMeshPhongMaterial || mat.isMeshStandardMaterial) {
+            shader.vertexShader =
+                inject +
+                shader.vertexShader.replace(
+                    '#include <project_vertex>',
+                    `
+          vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          vec3 p = inverseStereoProject(wp);
+          if (shouldCullHemisphere(wp)) {
+            gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
+          } else {
+            vec4 mv = viewMatrix * vec4(p, 1.0);
+            gl_Position = projectionMatrix * mv;
+          }
+        `
+                );
+        } else {
+            console.warn('Stereo projection: unsupported material type', mat?.type);
+        }
+
+        mat.userData = mat.userData || {};
+        mat.userData.shader = shader;
+    };
+
+    mat.userData = mat.userData || {};
+    mat.userData.stereoPatched = true;
+    return mat;
+}
+
+// ----------------------------------------------------------------------------
+// 3. GEOMETRY SANITIZATION
+// ----------------------------------------------------------------------------
+
+function isFinite3(x, y, z) {
+    return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z);
+}
+
+function isNearOrigin(x, y, z) {
+    return Math.abs(x) < 1.0 && Math.abs(y) < 1.0 && Math.abs(z) < 1.0;
+}
+
+const _scratchVecA = new THREE.Vector3();
+const _scratchVecB = new THREE.Vector3();
+const _scratchMatrix = new THREE.Matrix4();
+const _scratchRootInverse = new THREE.Matrix4();
+const RoadMaterialCache = new Map();
+const RoadTileAnchors = new Map();
+const tempColor = new THREE.Color();
+
+function getFeatureTileKey(featureRoot) {
+    const ext = featureRoot?.extent;
+    if (ext && typeof ext === 'object') {
+        if (ext.isExtent || ext.crs) {
+            const west = Number.isFinite(ext.west) ? ext.west : 0;
+            const east = Number.isFinite(ext.east) ? ext.east : 0;
+            const south = Number.isFinite(ext.south) ? ext.south : 0;
+            const north = Number.isFinite(ext.north) ? ext.north : 0;
+            const zoom = Number.isFinite(ext.zoom) ? ext.zoom : 0;
+            const crs = ext.crs || ext.projection || 'unknown';
+            return `${crs}|${west}|${east}|${south}|${north}|${zoom}`;
+        }
+    }
+    return featureRoot ? featureRoot.uuid : null;
+}
+
+function cleanupAnchorEntry(entry) {
+    if (!entry) return;
+    const { anchor, fatLines } = entry;
+    if (Array.isArray(fatLines)) {
+        for (const line of fatLines) {
+            if (!line) continue;
+            if (line.parent) {
+                line.parent.remove(line);
+            }
+            RoadFatLines.delete(line);
+        }
+    }
+    if (anchor && anchor.parent) {
+        anchor.parent.remove(anchor);
+    }
+}
+
+function cleanupFeatureFatLines(featureRoot) {
+    if (!featureRoot) return;
+    const key = featureRoot.userData?.roadTileKey;
+    if (key && RoadTileAnchors.has(key)) {
+        cleanupAnchorEntry(RoadTileAnchors.get(key));
+        RoadTileAnchors.delete(key);
+    }
+    if (featureRoot.userData) {
+        delete featureRoot.userData.roadAnchor;
+        delete featureRoot.userData.fatLines;
+        delete featureRoot.userData.roadTileKey;
+    }
+}
+
+function appendGeometryToGroup(sourceGeom, group, transformMatrix) {
+    if (!sourceGeom) return;
+    const posAttr = sourceGeom.attributes?.position;
+    if (!posAttr) return;
+
+    const colAttr = sourceGeom.attributes?.color;
+    const indexAttr = sourceGeom.index;
+
+    if (!colAttr && group.useColors) {
+        group.useColors = false;
+        group.colors.length = 0;
+    }
+
+    const useColors = group.useColors && !!colAttr;
+    const useTransform = !!transformMatrix;
+
+    function addSegment(aIdx, bIdx) {
+        const ax = posAttr.getX(aIdx);
+        const ay = posAttr.getY(aIdx);
+        const az = posAttr.getZ(aIdx);
+
+        const bx = posAttr.getX(bIdx);
+        const by = posAttr.getY(bIdx);
+        const bz = posAttr.getZ(bIdx);
+
+        if (!isFinite3(ax, ay, az) || !isFinite3(bx, by, bz)) return;
+        if (isNearOrigin(ax, ay, az) && isNearOrigin(bx, by, bz)) return;
+
+        if (useTransform) {
+            _scratchVecA.set(ax, ay, az).applyMatrix4(transformMatrix);
+            _scratchVecB.set(bx, by, bz).applyMatrix4(transformMatrix);
+            group.positions.push(
+                _scratchVecA.x, _scratchVecA.y, _scratchVecA.z,
+                _scratchVecB.x, _scratchVecB.y, _scratchVecB.z
+            );
+        } else {
+            group.positions.push(ax, ay, az, bx, by, bz);
+        }
+
+        if (useColors) {
+            group.colors.push(
+                colAttr.getX(aIdx), colAttr.getY(aIdx), colAttr.getZ(aIdx),
+                colAttr.getX(bIdx), colAttr.getY(bIdx), colAttr.getZ(bIdx)
+            );
+        }
+    }
+
+    if (indexAttr) {
+        for (let i = 0; i < indexAttr.count; i += 2) {
+            addSegment(indexAttr.getX(i), indexAttr.getX(i + 1));
+        }
+    } else {
+        for (let i = 0; i < posAttr.count; i += 2) {
+            addSegment(i, i + 1);
+        }
+    }
+}
+
+function addMeshToGeometryGroups(mesh, groups, transformMatrix) {
+    if (!mesh.geometry) return;
+    const props = getFeatureProperties(mesh);
+    const natureName = props?.nature || 'unknown';
+    const baseWidth = ROAD_WIDTH_BASE[natureName] || 2;
+    const key = `${natureName}|${baseWidth}`;
+
+    if (!groups.has(key)) {
+        groups.set(key, {
+            nature: natureName,
+            baseWidth,
+            color: ROAD_COLOR[natureName] || '#FF00FF',
+            positions: [],
+            colors: [],
+            useColors: true,
+        });
+    }
+
+    const group = groups.get(key);
+    appendGeometryToGroup(mesh.geometry, group, transformMatrix);
+
+    const mat = mesh.material;
+    if (mat) {
+        if (Array.isArray(mat)) {
+            mat.forEach((m) => {
+                if (m) m.visible = false;
+            });
+        } else {
+            mat.visible = false;
+        }
+    }
+    mesh.frustumCulled = !RoadGlobalState.disableFrustumCulling;
+    mesh.userData.hasProcessedFatLine = true;
+}
+
+function getRoadMaterial(baseWidth, hasColors, colorHex, isDefaultMode) {
+    const key = `${baseWidth}|${hasColors ? 'vc' : colorHex}`;
+    let mat = RoadMaterialCache.get(key);
+    if (!mat) {
+        mat = new LineMaterial({
+            color: hasColors ? 0xffffff : tempColor.set(colorHex).getHex(),
+            linewidth: baseWidth * RoadGlobalState.widthMultiplier,
+            vertexColors: hasColors,
+            worldUnits: RoadGlobalState.useWorldUnits,
+            dashed: false,
+            alphaToCoverage: false,
+            depthTest: isDefaultMode,
+            depthWrite: isDefaultMode,
+            transparent: !isDefaultMode,
+            resolution: RoadGlobalState.resolution,
+            polygonOffset: isDefaultMode,
+            polygonOffsetFactor: -4,
+            polygonOffsetUnits: -4
+        });
+        makeStereoProjectMaterial(mat);
+        RoadMaterialCache.set(key, mat);
+    }
+    return mat;
+}
+
+function createFatLinesFromGroups(featureRoot, targetRoot, groups) {
+    if (!groups.size) {
+        return;
+    }
+
+    let hasSegments = false;
+    for (const group of groups.values()) {
+        if (group.positions.length > 0) {
+            hasSegments = true;
+            break;
+        }
+    }
+    if (!hasSegments) {
+        return;
+    }
+
+    const tileKey = getFeatureTileKey(featureRoot);
+    if (tileKey && RoadTileAnchors.has(tileKey)) {
+        cleanupAnchorEntry(RoadTileAnchors.get(tileKey));
+        RoadTileAnchors.delete(tileKey);
+    } else {
+        cleanupFeatureFatLines(featureRoot);
+    }
+    featureRoot.userData = featureRoot.userData || {};
+    const anchor = new THREE.Group();
+    anchor.name = 'RoadTileAnchor';
+    anchor.matrixAutoUpdate = true;
+    anchor.matrix.copy(targetRoot.matrixWorld);
+    anchor.matrix.decompose(anchor.position, anchor.quaternion, anchor.scale);
+    anchor.updateMatrix();
+    anchor.updateMatrixWorld(true);
+    anchor.frustumCulled = !RoadGlobalState.disableFrustumCulling;
+    anchor.userData.isRoadAnchor = true;
+    RoadFatLineRoot.add(anchor);
+    anchor.updateMatrixWorld(true);
+    featureRoot.userData.roadAnchor = anchor;
+    featureRoot.userData.fatLines = [];
+
+    const isDefaultMode = RoadGlobalState.depthTest;
+
+    for (const group of groups.values()) {
+        if (group.positions.length === 0) continue;
+        const geometry = new LineSegmentsGeometry();
+        geometry.setPositions(group.positions);
+
+        const hasColors = group.useColors && group.colors.length === group.positions.length;
+        if (hasColors) {
+            geometry.setColors(group.colors);
+        }
+
+        const material = getRoadMaterial(group.baseWidth, hasColors, group.color, isDefaultMode);
+        const fatLine = new LineSegments2(geometry, material);
+
+        fatLine.renderOrder = isDefaultMode ? 0 : 999;
+        fatLine.userData.isFatLine = true;
+        fatLine.userData.baseWidth = group.baseWidth;
+        fatLine.userData.roadNature = group.nature;
+        fatLine.userData.stateVersion = -1;
+        fatLine.frustumCulled = !RoadGlobalState.disableFrustumCulling;
+
+        fatLine.position.set(0, 0, RoadGlobalState.altitudeOffset);
+        fatLine.updateMatrixWorld();
+
+        anchor.add(fatLine);
+        featureRoot.userData.fatLines.push(fatLine);
+        RoadFatLines.add(fatLine);
+    }
+
+    if (tileKey) {
+        RoadTileAnchors.set(tileKey, {
+            anchor,
+            fatLines: featureRoot.userData.fatLines,
+            sourceRoot: targetRoot,
+        });
+        featureRoot.userData.roadTileKey = tileKey;
+    }
+
+    view.notifyChange(true);
+}
+
+// ----------------------------------------------------------------------------
+// 4. ROADS LAYER LOGIC
+// ----------------------------------------------------------------------------
 
 const roadsSource = new itowns.WFSSource({
     url: 'https://data.geopf.fr/wfs/ows?',
     version: '2.0.0',
-    typeName: 'BDTOPO_V3:troncon_de_route',   // <- from capabilities
+    typeName: 'BDTOPO_V3:troncon_de_route',
     crs: 'EPSG:4326',
     format: 'application/json',
-    // extent: {
-    //     west: 4.1,
-    //     east: 4.9,
-    //     south: 45.6,
-    //     north: 45.8,
-    // },
-    zoom: { min: 6, max: 15 },
+    zoom: { min: 12, max: 15 },
 });
+
+const altitudeDebug = {
+    logged: 0,
+    max: 20,
+};
+
+function logAltitudeIssue(reason, props) {
+    if (altitudeDebug.logged >= altitudeDebug.max) return;
+    altitudeDebug.logged++;
+    console.warn(`[RoadAltitude] ${reason}`, {
+        id: props?.id || props?.ID || props?.nature,
+        nature: props?.nature,
+    });
+}
+
+function resolveBaseCoordinate(ctx) {
+    if (!ctx) return null;
+    const coord = Array.isArray(ctx.coordinates) ? ctx.coordinates[0] : ctx.coordinates;
+    if (!coord) return null;
+    if (coord.isCoordinates) return coord;
+    if (coord.crs) return new itowns.Coordinates(coord.crs, coord.x, coord.y, coord.z || 0);
+    return new itowns.Coordinates('EPSG:4326', coord.x, coord.y, coord.z || 0);
+}
+
+const reusableCoord = new itowns.Coordinates('EPSG:4326', 0, 0, 0);
+const demReadMode = (itowns.DEMUtils && (itowns.DEMUtils.PRECISE_READ_Z || itowns.DEMUtils.FAST_READ_Z)) || 0;
+function getRoadBaseAltitude(props, ctx) {
+    const coord = resolveBaseCoordinate(ctx);
+    if (!coord) return 0;
+    const z = Number.isFinite(coord.z) ? coord.z : 0;
+
+    const tileLayer = view.tileLayer;
+    if (!tileLayer || !itowns.DEMUtils || !coord.isCoordinates) {
+        if (z === 0) logAltitudeIssue('No DEM available, falling back to z=0', props);
+        return z;
+    }
+
+    reusableCoord.copy(coord);
+    const demElevation = itowns.DEMUtils.getElevationValueAt(
+        tileLayer,
+        reusableCoord,
+        demReadMode
+    );
+    if (Number.isFinite(demElevation)) {
+        return demElevation;
+    }
+
+    if (z === 0) logAltitudeIssue('DEM not ready, using fallback altitude', props);
+    return z;
+}
 
 const roadsLayer = new itowns.FeatureGeometryLayer('BDTOPO_Roads', {
     source: roadsSource,
     zoom: { min: 12 },
+    mergeFeatures: false,
     style: {
         stroke: {
-            color: 0xff0000,
-            width: 50,
-            base_altitude: (props, ctx) => {
-                if (!read_once) {
-                    console.log('Building properties example:', props);
-                    read_once = true;
-                }
-                // ctx.coordinates = current vertex coordinates (in layer CRS)
-                // Use its own Z if present, then push up slightly.
-                const c = Array.isArray(ctx.coordinates)
-                    ? ctx.coordinates[0]
-                    : ctx.coordinates;
-
-                const z = (c && typeof c.z === 'number') ? c.z : 0;
-                return z + 5; // 0.5 m above whatever BD TOPO says
-            }
+            color: (props) => ROAD_COLOR[props.nature] || '#FF00FF',
+            base_altitude: (props, ctx) => getRoadBaseAltitude(props, ctx),
         },
     },
 });
+roadsLayer.onMeshCreated = (root) => scheduleRoadProcessing(root);
+const roadLayers = [roadsLayer];
 
+function scheduleRoadProcessing(root) {
+    if (!root) return;
+    if (root.userData?.hasQueuedFatLine) return;
+    root.userData = root.userData || {};
+    root.userData.hasQueuedFatLine = true;
 
-// ---- Ripple state (world coords in EPSG:4978) ----
-const Ripple = {
-    epicenter: new THREE.Vector3(0, 0, 0),
-    hasEpicenter: false,
-    color: new THREE.Color('#ff0000'),
-};
-
-// set epicenter from a world-space THREE.Vector3
-function setRippleEpicenterWorld(vec3) {
-    if (!vec3) return;
-    Ripple.epicenter.copy(vec3);
-    Ripple.hasEpicenter = true;
-}
-
-// get world point at screen center when depth is ready (no timeout)
-function setEpicenterFromScreenCenter(view) {
-    let done = false;
-    view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
-        if (done) return;
-        const w = view.mainLoop.gfxEngine.width;
-        const h = view.mainLoop.gfxEngine.height;
-        const screen = new THREE.Vector2(w * 0.5, h * 0.5);
-        const p = view.getPickingPositionFromDepth(screen);
-        if (p) {
-            setRippleEpicenterWorld(p);
-            done = true;
+    const attemptProcess = () => {
+        if (!root.parent) {
+            requestAnimationFrame(attemptProcess);
+            return;
         }
-    });
-}
-
-// set epicenter from a click (no key modifier needed, change if you want)
-function bindEpicenterPicking(viewerDiv, view) {
-    viewerDiv.addEventListener('click', (event) => {
-        const coords = view.eventToViewCoords(event);
-        const p = view.getPickingPositionFromDepth(coords);
-        console.log('Picked epicenter at:', p);
-        if (p) setRippleEpicenterWorld(p);
-    });
-}
-function makeRippleMaterial(baseMat) {
-    const mat = baseMat.clone();
-    mat.transparent = true;
-    mat.depthWrite = false;
-    mat.renderOrder = 10;
-
-    mat.onBeforeCompile = (shader) => {
-        // uniforms shared by all variants
-        shader.uniforms.uTime = shader.uniforms.uTime || { value: 0.0 };
-        shader.uniforms.uEpicenter = shader.uniforms.uEpicenter || { value: new THREE.Vector3() };
-        shader.uniforms.uAmp = shader.uniforms.uAmp || { value: 8.0 };
-        shader.uniforms.uK = shader.uniforms.uK || { value: 0.02 };
-        shader.uniforms.uSpeed = shader.uniforms.uSpeed || { value: 3.0 };
-
-        const injectCommon = `
-      uniform float uTime;
-      uniform vec3  uEpicenter;
-      uniform float uAmp;
-      uniform float uK;
-      uniform float uSpeed;
-    `;
-
-        let patched = false;
-
-        // --- Mesh path: displace along normal ---
-        if (baseMat.isMeshBasicMaterial || baseMat.isMeshPhongMaterial || baseMat.isMeshStandardMaterial) {
-            shader.vertexShader =
-                injectCommon +
-                shader.vertexShader.replace(
-                    '#include <begin_vertex>',
-                    `
-          #include <begin_vertex>
-          vec3 wp = (modelMatrix * vec4(position, 1.0)).xyz;
-          float d = length(wp - uEpicenter);
-          float phase = d * uK - uTime * uSpeed;
-          float h = uAmp * sin(phase);
-          transformed += normalize(normal) * h;
-          `
-                );
-            patched = true;
-        }
-
-        // --- LineBasicMaterial path: modify 'transformed' before projection ---
-        if (!patched && baseMat.isLineBasicMaterial === true) {
-            if (shader.vertexShader.includes('#include <begin_vertex>')) {
-                shader.vertexShader =
-                    injectCommon +
-                    shader.vertexShader.replace(
-                        '#include <begin_vertex>',
-                        `
-            #include <begin_vertex>
-            vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
-            float d = length(wp - uEpicenter);
-            float phase = d * uK - uTime * uSpeed;
-            transformed.z += uAmp * sin(phase);
-            `
-                    );
-                patched = true;
-            }
-        }
-
-        // --- LineMaterial (Line2) path: patch instance endpoints ---
-        if (!patched && baseMat.isLineMaterial === true) {
-            const needleStart = 'vec4 start = modelViewMatrix * vec4( instanceStart, 1.0 );';
-            const needleEnd = 'vec4 end = modelViewMatrix * vec4( instanceEnd, 1.0 );';
-            if (shader.vertexShader.includes(needleStart) && shader.vertexShader.includes(needleEnd)) {
-                shader.vertexShader =
-                    injectCommon +
-                    shader.vertexShader
-                        .replace(
-                            needleStart,
-                            `
-              vec3 wpStart = (modelMatrix * vec4( instanceStart, 1.0 )).xyz;
-              float dStart = length(wpStart - uEpicenter);
-              float phaseStart = dStart * uK - uTime * uSpeed;
-              float hStart = uAmp * sin(phaseStart);
-              vec4 start = modelViewMatrix * vec4( instanceStart, 1.0 );
-              start.z += hStart;
-              `
-                        )
-                        .replace(
-                            needleEnd,
-                            `
-              vec3 wpEnd = (modelMatrix * vec4( instanceEnd, 1.0 )).xyz;
-              float dEnd = length(wpEnd - uEpicenter);
-              float phaseEnd = dEnd * uK - uTime * uSpeed;
-              float hEnd = uAmp * sin(phaseEnd);
-              vec4 end = modelViewMatrix * vec4( instanceEnd, 1.0 );
-              end.z += hEnd;
-              `
-                        );
-                patched = true;
-            }
-        }
-
-        if (!patched) {
-            console.warn('Ripple: material not patched; type=', baseMat.type);
-        }
-
-        mat.userData.shader = shader;
+        processRoadTileRoot(root);
     };
 
-    return mat;
+    requestAnimationFrame(attemptProcess);
 }
 
-function enableRippleShaderLive(view, layer, makeRippleMaterial, params = {}) {
-    let time = 0;
-    let logged = false;
-    const uniforms = {
-        amp: params.amp ?? 25.0, // big to see motion
-        k: params.k ?? 0.02,
-        speed: params.speed ?? 3.0,
-    };
+function getFeatureProperties(object) {
+    // Traverse UP to find the feature properties attached by iTowns
+    let obj = object;
+    while (obj) {
+        if (obj.userData?.feature?.properties) return obj.userData.feature.properties;
+        if (obj.feature?.properties) return obj.feature.properties;
+        obj = obj.parent;
+    }
+    return {};
+}
 
-    view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, (dt = 16.7) => {
-        time += dt * 0.001;
+function processRoadTileRoot(featureRoot) {
+    if (!featureRoot) return;
+    const targetRoot = featureRoot.meshes || featureRoot;
+    const tileKey = getFeatureTileKey(featureRoot);
+    if (tileKey && RoadTileAnchors.has(tileKey)) {
+        featureRoot.userData = featureRoot.userData || {};
+        featureRoot.userData.hasQueuedFatLine = false;
+        return;
+    }
+    featureRoot.userData = featureRoot.userData || {};
+    featureRoot.userData.isRoadFeature = true;
 
-        let patchedCount = 0;
+    // Ensure matrices are updated relative to current hierarchy before we bake vertices.
+    featureRoot.updateWorldMatrix(true, true);
+    targetRoot.updateWorldMatrix(true, true);
+    const frustumState = !RoadGlobalState.disableFrustumCulling;
+    targetRoot.frustumCulled = frustumState;
+    featureRoot.frustumCulled = frustumState;
 
-        layer.object3d.traverse((obj) => {
-            const isRenderable = obj.isMesh || obj.isLine;
-            if (!isRenderable || !obj.material) return;
-            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-            for (let i = 0; i < mats.length; i++) {
-                const m = mats[i];
-                if (!m.userData?.ripplePatched) {
-                    const nm = makeRippleMaterial(m);
-                    // ---- ensure color REPLACEMENT for new tiles ----
-                    if (nm.isLineBasicMaterial || nm.isLineMaterial || nm.isMeshBasicMaterial || nm.isMeshStandardMaterial || nm.isMeshPhongMaterial) {
-                        nm.vertexColors = false;                    // stop vertex color multiply
-                        nm.color.copy(Ripple.color);           // start with current selected color
-                        nm.needsUpdate = true;                      // drop USE_COLOR define if any
-                    }
-                    // ------------------------------------------------
+    const geometryGroups = new Map();
+    const targetInverse = _scratchRootInverse.copy(targetRoot.matrixWorld).invert();
 
-                    nm.userData = nm.userData || {};
-                    nm.userData.ripplePatched = true;
-                    mats[i] = nm;
-                    patchedCount++;
-                }
-            }
-            obj.material = Array.isArray(obj.material) ? mats : mats[0];
-        });
+    const traverse = (node) => {
+        if (!node) return;
+        if (node.userData?.isFatLine) return;
 
-        if (patchedCount && !logged) {
-            console.log('Ripple: patched materials this frame =', patchedCount);
-            logged = true;
+        const isLineLike = node.isMesh || node.isLine || node.isLineSegments;
+        if (isLineLike && node.geometry && !node.userData?.hasProcessedFatLine) {
+            const toTargetMatrix = _scratchMatrix.copy(node.matrixWorld).premultiply(targetInverse);
+            addMeshToGeometryGroups(node, geometryGroups, toTargetMatrix);
         }
 
-        layer.object3d.traverse((obj) => {
-            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-            for (const m of mats) {
-                const s = m?.userData?.shader;
-                if (!s?.uniforms) continue;
-                if (s.uniforms.uTime) s.uniforms.uTime.value = time;
-                if (s.uniforms.uEpicenter) s.uniforms.uEpicenter.value.copy(Ripple.epicenter);
-                if (s.uniforms.uAmp) s.uniforms.uAmp.value = uniforms.amp;
-                if (s.uniforms.uK) s.uniforms.uK.value = uniforms.k;
-                if (s.uniforms.uSpeed) s.uniforms.uSpeed.value = uniforms.speed;
+        if (node.children) {
+            for (const child of node.children) {
+                traverse(child);
             }
-        });
+        }
+    };
 
+    traverse(targetRoot);
+    createFatLinesFromGroups(featureRoot, targetRoot, geometryGroups);
+    featureRoot.userData.hasQueuedFatLine = false;
+}
+
+Promise.all(roadLayers.map((layer) => view.addLayer(layer))).then(() => {
+    console.log('Roads layer added');
+    createRoadsUI();
+    // Set initial width value in the UI to match the default in RoadGlobalState
+    document.getElementById('ui-width-val').innerText = RoadGlobalState.widthMultiplier.toFixed(1) + 'x';
+    document.getElementById('ui-width').value = RoadGlobalState.widthMultiplier;
+});
+
+// ----------------------------------------------------------------------------
+// 5. ROBUST SYNC LOOP
+// ----------------------------------------------------------------------------
+
+// We increment this whenever the user touches the UI
+let globalStateVersion = 0;
+
+view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
+    const renderer = view.mainLoop.gfxEngine.renderer;
+    renderer.getSize(RoadGlobalState.resolution);
+    StereoUniforms.uCameraPos.value.copy(view.camera.camera3D.position);
+
+    const sphereCtl = SphereProjectionState.controller;
+    const active = sphereCtl && sphereCtl.hasGround && sphereCtl.hasGround();
+    const useProjection = RoadGlobalState.useProjection && !!active;
+    const useCull = RoadGlobalState.cullBackfaces && !!active;
+
+    if (active) {
+        StereoUniforms.uSphereCenter.value.copy(sphereCtl.mesh.position);
+        StereoUniforms.uSphereR.value = sphereCtl.mesh.scale.x;
+    } else {
+        StereoUniforms.uSphereCenter.value.set(0, 0, 0);
+        StereoUniforms.uSphereR.value = -1;
+    }
+    StereoUniforms.uProjectionStrength.value = useProjection ? 1.0 : 0.0;
+    StereoUniforms.uCullBackfaces.value = useCull ? 1.0 : 0.0;
+
+    for (const entry of RoadTileAnchors.values()) {
+        const source = entry.sourceRoot;
+        if (source && source.parent) {
+            source.updateWorldMatrix(true, false);
+            entry.anchor.matrix.copy(source.matrixWorld);
+            entry.anchor.matrix.decompose(entry.anchor.position, entry.anchor.quaternion, entry.anchor.scale);
+            entry.anchor.updateMatrixWorld(true);
+        } else if (source && !source.parent) {
+            entry.sourceRoot = null;
+        }
+    }
+
+    for (const obj of RoadFatLines) {
+        if (!obj || !obj.material) continue;
+        if (!obj.parent) {
+            RoadFatLines.delete(obj);
+            continue;
+        }
+        const mat = obj.material;
+
+        mat.resolution.copy(RoadGlobalState.resolution);
+
+        if (obj.userData.stateVersion !== globalStateVersion) {
+            const base = obj.userData.baseWidth || 2;
+            mat.linewidth = base * RoadGlobalState.widthMultiplier;
+            mat.worldUnits = RoadGlobalState.useWorldUnits;
+
+            const isDefaultMode = RoadGlobalState.depthTest;
+            mat.depthTest = isDefaultMode;
+            mat.depthWrite = isDefaultMode;
+            mat.transparent = !isDefaultMode;
+            mat.polygonOffset = isDefaultMode;
+            obj.renderOrder = isDefaultMode ? 0 : 999;
+            obj.position.z = RoadGlobalState.altitudeOffset;
+            obj.updateMatrix();
+
+            mat.needsUpdate = true;
+            obj.userData.stateVersion = globalStateVersion;
+        }
+    }
+});
+
+// ----------------------------------------------------------------------------
+// 6. UI & STATE CONTROL
+// ----------------------------------------------------------------------------
+
+function notifyRoadLayers() {
+    for (const layer of roadLayers) {
         view.notifyChange(layer);
-    });
-
-    return {
-        setParams(next) { Object.assign(uniforms, next); },
-    };
+    }
 }
 
-function recenterEpicenterToScreen(view) {
-    const w = view.mainLoop.gfxEngine.width;
-    const h = view.mainLoop.gfxEngine.height;
-    const screen = new THREE.Vector2(w * 0.5, h * 0.5);
-    const p = view.getPickingPositionFromDepth(screen);
-    if (p) setRippleEpicenterWorld(p);
-}
-
-function applyRippleColor(layer, hex) {
-    const col = new THREE.Color(hex);
-    Ripple.color.copy(col);
-    let changed = false;
-    layer.object3d.traverse(o => {
-        if (!o.material) return;
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of mats) {
-            if (m.color) { m.color.copy(col); changed = true; }
+function applyFrustumCullingState() {
+    const frustumCulled = !RoadGlobalState.disableFrustumCulling;
+    for (const layer of roadLayers) {
+        layer.object3d.traverse((obj) => {
+            if (!obj) return;
+            if (obj.userData?.isFatLine || obj.userData?.isRoadFeature || obj.isLine || obj.isLineSegments || obj.isMesh || obj.isGroup) {
+                obj.frustumCulled = frustumCulled;
+            }
+        });
+    }
+    RoadFatLineRoot.frustumCulled = frustumCulled;
+    RoadFatLineRoot.traverse((obj) => {
+        if (!obj) return;
+        if (obj.userData?.isFatLine || obj.userData?.isRoadFeature || obj.userData?.isRoadAnchor || obj.isLine || obj.isLineSegments || obj.isMesh || obj.isGroup) {
+            obj.frustumCulled = frustumCulled;
         }
     });
-    if (changed) layer.viewer?.notifyChange(layer); // or view.notifyChange(layer);
+    notifyRoadLayers();
 }
 
-function createRippleWidget(view, layer, ctl, initial = { amp: 8, speed: 3, k: 0.02, color: '#ff0000' }) {
-    // container
+function triggerUpdate() {
+    globalStateVersion++;
+    notifyRoadLayers();
+}
+
+function createRoadsUI() {
     const panel = document.createElement('div');
-    panel.id = 'widgets-ripple';
-    panel.className = 'top-widget right-widget';
-    panel.style.position = 'absolute';
-    panel.style.zIndex = 20;
-    panel.style.right = '10px';
-    panel.style.top = '10px';
-    panel.style.background = '#313336bb';
-    panel.style.border = '1px solid #222';
-    panel.style.borderRadius = '7px';
-    panel.style.padding = '8px 10px';
-    panel.style.color = '#fff';
-    panel.style.font = '13px/1.2 Arial, sans-serif';
-    panel.style.minWidth = '220px';
+    Object.assign(panel.style, {
+        position: 'absolute', right: '10px', top: '10px', zIndex: 100,
+        background: '#222222ee', border: '1px solid #444', borderRadius: '8px',
+        padding: '15px', color: '#fff', fontFamily: 'sans-serif', fontSize: '13px',
+        minWidth: '260px', display: 'flex', flexDirection: 'column', gap: '12px'
+    });
 
     panel.innerHTML = `
-    <div style="font-weight:700; margin-bottom:6px;">Ripple</div>
-    <label>Amplitude (m)<input id="rip-amp" type="range" min="0" max="50" step="0.1" value="${initial.amp}" /></label>
-    <div id="rip-amp-v" style="opacity:.8;margin-bottom:6px;">${initial.amp}</div>
+        <div style="font-weight:bold; font-size:14px; border-bottom:1px solid #555; padding-bottom:5px;">
+            Road Settings
+        </div>
+        
+        <label style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Visibility</span>
+            <input type="checkbox" id="ui-visible" checked>
+        </label>
 
-    <label>Speed<input id="rip-speed" type="range" min="0" max="10" step="0.1" value="${initial.speed}" /></label>
-    <div id="rip-speed-v" style="opacity:.8;margin-bottom:6px;">${initial.speed}</div>
+        <!-- Always On Top Toggle -->
+        <label style="display:flex; justify-content:space-between; align-items:center; background:#333; padding:5px; border-radius:4px;">
+            <span>Always On Top (Ghost)</span>
+            <input type="checkbox" id="ui-ontop">
+        </label>
 
-    <label>k (2π/λ)<input id="rip-k" type="range" min="0.001" max="0.2" step="0.001" value="${initial.k}"/></label>
-    <div id="rip-k-v" style="opacity:.8;margin-bottom:6px;">${initial.k}</div>
+        <label style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Stereographic Projection</span>
+            <input type="checkbox" id="ui-projection" ${RoadGlobalState.useProjection ? 'checked' : ''}>
+        </label>
 
-    <label>Color <input id="rip-color" type="color" value="${initial.color}" style="width:100%;height:28px;border:none;background:transparent;padding:0;"/></label>
+        <label style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Cull Backfaces (Sphere)</span>
+            <input type="checkbox" id="ui-cull" ${RoadGlobalState.cullBackfaces ? 'checked' : ''}>
+        </label>
+        <label style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Disable Frustum Culling</span>
+            <input type="checkbox" id="ui-nocull" ${RoadGlobalState.disableFrustumCulling ? 'checked' : ''}>
+        </label>
 
-    <div style="display:flex; gap:6px; margin-top:8px;">
-      <button id="rip-center" style="flex:1;background:#313336bb;border:1px solid #222;border-radius:6px;color:#fff;height:28px;">Center here</button>
-      <button id="rip-follow" style="flex:1;background:#313336bb;border:1px solid #222;border-radius:6px;color:#fff;height:28px;">Follow cam</button>
-    </div>
-  `;
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Width Multiplier</span>
+                <span id="ui-width-val">${RoadGlobalState.widthMultiplier.toFixed(1)}x</span>
+            </div>
+            <input type="range" id="ui-width" min="0.1" max="5" step="0.1" value="${RoadGlobalState.widthMultiplier}">
+        </div>
 
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Elevation Offset</span>
+                <span id="ui-alt-val">${RoadGlobalState.altitudeOffset.toFixed(1)} m</span>
+            </div>
+            <input type="range" id="ui-alt" min="-50" max="50" step="0.5" value="${RoadGlobalState.altitudeOffset}">
+        </div>
+
+        <label style="display:flex; justify-content:space-between; align-items:center;">
+            <span>World Units (Meters)</span>
+            <input type="checkbox" id="ui-worldunits">
+        </label>
+        
+        <button id="ui-debug" style="margin-top:5px; padding:4px; background:#444; border:none; color:#ccc; cursor:pointer;">Debug Console</button>
+    `;
     document.body.appendChild(panel);
 
-    const amp = panel.querySelector('#rip-amp');
-    const speed = panel.querySelector('#rip-speed');
-    const k = panel.querySelector('#rip-k');
-    const color = panel.querySelector('#rip-color');
-    const ampV = panel.querySelector('#rip-amp-v');
-    const speedV = panel.querySelector('#rip-speed-v');
-    const kV = panel.querySelector('#rip-k-v');
-    const btnCenter = panel.querySelector('#rip-center');
-    const btnFollow = panel.querySelector('#rip-follow');
-
-    // init
-    ctl.setParams({ amp: +amp.value, speed: +speed.value, k: +k.value });
-    applyRippleColor(layer, color.value);
-
-    // handlers
-    amp.oninput = () => { ampV.textContent = amp.value; ctl.setParams({ amp: +amp.value }); };
-    speed.oninput = () => { speedV.textContent = speed.value; ctl.setParams({ speed: +speed.value }); };
-    k.oninput = () => { kV.textContent = k.value; ctl.setParams({ k: +k.value }); };
-    color.oninput = () => applyRippleColor(layer, color.value);
-
-    btnCenter.onclick = () => { recenterEpicenterToScreen(view); };
-
-    // follow camera = continuously recenters at screen center
-    let follow = false;
-    let followReq = null;
-    btnFollow.onclick = () => {
-        follow = !follow;
-        btnFollow.style.background = follow ? '#222' : '#313336bb';
-        if (follow && !followReq) {
-            followReq = (dt) => { recenterEpicenterToScreen(view); };
-            view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, followReq);
-        } else if (!follow && followReq) {
-            view.removeFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, followReq);
-            followReq = null;
+    // Events
+    document.getElementById('ui-visible').addEventListener('change', (e) => {
+        for (const layer of roadLayers) {
+            layer.object3d.visible = e.target.checked;
         }
-    };
+        notifyRoadLayers();
+    });
 
-    return panel;
+    document.getElementById('ui-ontop').addEventListener('change', (e) => {
+        // Logic: Checked = Always On Top -> depthTest = false (Mode Switch)
+        RoadGlobalState.depthTest = !e.target.checked;
+        triggerUpdate();
+    });
+
+    document.getElementById('ui-projection').addEventListener('change', (e) => {
+        RoadGlobalState.useProjection = e.target.checked;
+        triggerUpdate();
+    });
+
+    document.getElementById('ui-cull').addEventListener('change', (e) => {
+        RoadGlobalState.cullBackfaces = e.target.checked;
+        notifyRoadLayers();
+    });
+    document.getElementById('ui-nocull').addEventListener('change', (e) => {
+        RoadGlobalState.disableFrustumCulling = e.target.checked;
+        applyFrustumCullingState();
+    });
+
+    document.getElementById('ui-width').addEventListener('input', (e) => {
+        const v = parseFloat(e.target.value);
+        document.getElementById('ui-width-val').innerText = v.toFixed(1) + 'x';
+        RoadGlobalState.widthMultiplier = v;
+        triggerUpdate();
+    });
+
+    document.getElementById('ui-alt').addEventListener('input', (e) => {
+        const v = parseFloat(e.target.value);
+        document.getElementById('ui-alt-val').innerText = v.toFixed(1) + ' m';
+        RoadGlobalState.altitudeOffset = v;
+        triggerUpdate();
+    });
+
+    document.getElementById('ui-worldunits').addEventListener('change', (e) => {
+        RoadGlobalState.useWorldUnits = e.target.checked;
+        triggerUpdate();
+    });
+
+    document.getElementById('ui-debug').addEventListener('click', () => {
+        let count = 0;
+        for (const layer of roadLayers) {
+            layer.object3d.traverse(o => { if (o.userData?.isFatLine) count++; });
+        }
+        RoadFatLineRoot.traverse(o => { if (o.userData?.isFatLine) count++; });
+        console.log(`Visible Fat Lines: ${count}`);
+    });
 }
-
-
-
-view.addLayer(roadsLayer).then(() => {
-    console.log('BDTOPO_Roads layer added');
-
-    // timeout
-    setTimeout(() => {
-        const roadsCtl = enableRippleShaderLive(view, roadsLayer, makeRippleMaterial, {
-            amp: 20.0, k: 0.02, speed: 3.0,
-        });
-
-        setEpicenterFromScreenCenter(view);  // initial center = where you look
-        bindEpicenterPicking(viewerDiv, view); // clicks move epicenter
-        roadsLayer.object3d.traverse(o => {
-            if (o.isLine && o.material?.userData?.shader) {
-                console.log(o.material.userData.shader.uniforms);
-                return true; // stop after first
-            }
-        });
-        createRippleWidget(view, roadsLayer, roadsCtl, {
-            amp: 8, speed: 3, k: 0.02, color: '#ff0000',
-        });
-        // const bldgCtl = enableRippleShaderLive(view, buildingsLayer, makeRippleMaterial);
-        // enableRippleShaderLive(view, roadsLayer, makeRippleMaterial);
-    }, 1000);
-
-    // enable ripple effect on roads layer
-});
