@@ -347,10 +347,18 @@ const StereoUniforms = {
     uCameraPos: { value: new THREE.Vector3() },
     uCullBackfaces: { value: 0.0 },
     uSphereBasis: { value: new THREE.Matrix3() },
-    // New precomputed uniforms:
+
+    // precomputed uniforms:
     uTwoR: { value: 0.0 },                // 2 * R
     uInv2R: { value: 0.0 },               // 1 / (2 * R)
     uCameraDirFromCenter: { value: new THREE.Vector3(0, 0, 1) }, // normalized
+
+    // NEW: cone + mode
+    uProjectionSurface: { value: 0.0 },             // 0 = sphere, 1 = cone
+    uConeApex: { value: new THREE.Vector3() },      // apex in world
+    uConeAxis: { value: new THREE.Vector3(0, 1, 0) }, // unit axis (upwards)
+    uConeSlope: { value: 1.0 },                     // k = r_ground / hc
+    uConeTopZ: { value: 1.0 },                      // distance apex → cone top (along axis)
 };
 
 const RoadFatLines = new Set();
@@ -485,37 +493,24 @@ function makeSphereController(view, {
 
         const up = new THREE.Vector3(0, 1, 0);
 
-        if (CONE_TRUNCATE_AT_GROUND) {
-            // Cone defined by apex below ground and radius rView at ground.
-            // r(h) = rView * (1 + h / hc), where h is height above ground.
-            const k = state.coneHeightMul || 1.0;
+        // Cone defined by apex below ground and radius rView at ground.
+        // r(h) = rView * (1 + h / hc), where h is height above ground.
+        const k = state.coneHeightMul || 1.0;
 
-            const hTopDefault = P;                      // sphere zenith height
-            const hTop = THREE.MathUtils.clamp(
-                k * hTopDefault,
-                CONE_HEIGHT_MIN * hTopDefault,
-                CONE_HEIGHT_MAX * hTopDefault,
-            );
+        const hTopDefault = P;                      // sphere zenith height
+        const hTop = THREE.MathUtils.clamp(
+            k * hTopDefault,
+            CONE_HEIGHT_MIN * hTopDefault,
+            CONE_HEIGHT_MAX * hTopDefault,
+        );
 
-            const rTop = rView * (1.0 + hTop / hc);     // radius at new top height
+        const rTop = rView * (1.0 + hTop / hc);     // radius at new top height
 
-            cylBottomRadius = Math.max(minRadius, rView);
-            cylTopRadius = Math.max(minRadius, rTop);
-            cylHeight = hTop;
-            cylCenter = G.clone().addScaledVector(normal, 0.5 * hTop);
-            cylAxisDir = normal;
-        } else {
-            // Original "sphere-bottom" truncation; we leave this mode unchanged.
-            const B = C.clone().addScaledVector(normal, -R);
-
-            const rBottomRaw = rTopInfinite * (1.0 - (2.0 * R / totalHeight));
-
-            cylTopRadius = rTopInfinite;
-            cylBottomRadius = Math.max(minRadius, rBottomRaw);
-            cylHeight = 2.0 * R;
-            cylCenter = C.clone();
-            cylAxisDir = normal;
-        }
+        cylBottomRadius = Math.max(minRadius, rView);
+        cylTopRadius = Math.max(minRadius, rTop);
+        cylHeight = hTop;
+        cylCenter = G.clone().addScaledVector(normal, 0.5 * hTop);
+        cylAxisDir = normal;
 
         const q = new THREE.Quaternion().setFromUnitVectors(up, cylAxisDir);
 
@@ -538,6 +533,21 @@ function makeSphereController(view, {
             externalClampCylinder.visible = (displayMode === 'cone');
             externalClampCylinder.updateMatrixWorld(true);
         }
+
+        // Infinite cone definition for the shader
+        // apex: below ground along -normal
+        const apex = G.clone().addScaledVector(normal, -hc);
+
+        // slope: radius at ground / height of ground above apex
+        const kSlope = rView / hc;
+
+        // z coordinate of cone top in apex-frame
+        const zTop = hc + hTop;
+
+        StereoUniforms.uConeApex.value.copy(apex);
+        StereoUniforms.uConeAxis.value.copy(normal);
+        StereoUniforms.uConeSlope.value = kSlope;
+        StereoUniforms.uConeTopZ.value = zTop;
 
         view.notifyChange(true);
     }
@@ -605,6 +615,10 @@ function makeSphereController(view, {
             if (externalClampCylinder) {
                 externalClampCylinder.visible = showCone;
             }
+
+            // Tell the shader which surface to use
+            StereoUniforms.uProjectionSurface.value = (displayMode === 'cone') ? 1.0 : 0.0;
+
             logSphere('setDisplayMode', displayMode);
             view.notifyChange(true);
         },
@@ -894,10 +908,17 @@ function makeStereoProjectMaterial(mat) {
         shader.uniforms.uSphereBasis = StereoUniforms.uSphereBasis;
 
 
-        // NEW: bind the precomputed uniforms too
+        // precomputed uniforms
         shader.uniforms.uTwoR = StereoUniforms.uTwoR;
         shader.uniforms.uInv2R = StereoUniforms.uInv2R;
         shader.uniforms.uCameraDirFromCenter = StereoUniforms.uCameraDirFromCenter;
+
+        // cone + mode uniforms
+        shader.uniforms.uProjectionSurface = StereoUniforms.uProjectionSurface;
+        shader.uniforms.uConeApex = StereoUniforms.uConeApex;
+        shader.uniforms.uConeAxis = StereoUniforms.uConeAxis;
+        shader.uniforms.uConeSlope = StereoUniforms.uConeSlope;
+        shader.uniforms.uConeTopZ = StereoUniforms.uConeTopZ;
 
         let vs = shader.vertexShader;
         const inject = /* glsl */`
@@ -908,15 +929,26 @@ uniform vec3  uCameraPos;
 uniform float uCullBackfaces;
 uniform mat3  uSphereBasis;
 
-// New precomputed uniforms:
+// Precomputed uniforms:
 uniform float uTwoR;              // 2 * uSphereR
 uniform float uInv2R;             // 1 / (2 * uSphereR)
 uniform vec3  uCameraDirFromCenter; // normalized (camera - center)
+
+// NEW: cone + surface mode
+uniform float uProjectionSurface;   // 0 = sphere, 1 = cone
+uniform vec3  uConeApex;
+uniform vec3  uConeAxis;           // unit vector
+uniform float uConeSlope;          // k = r_ground / hc
+uniform float uConeTopZ;           // z_t (apex → top center along axis)
 
 // Helper: is stereographic projection actually active?
 bool isProjectionEnabled() {
   return (uProjectionStrength > 0.0 && uSphereR > 0.0);
 }
+
+
+// ----------------- Sphere mapping -----------------
+
 
 vec3 terrainToSphere(vec3 s) {
   // h = 0.5 - s.y
@@ -961,6 +993,98 @@ vec3 inverseStereoProject(vec3 wp) {
   vec3 q = terrainToSphere(s);
   return C - (uSphereBasis * (q * uTwoR));
 }
+
+
+// ----------------- Cone mapping -----------------
+// Cone:
+//  apex at uConeApex
+//  axis uConeAxis (unit, apex→up)
+//  slope k = uConeSlope, with r = k * z in apex-frame
+//  top center at z = uConeTopZ in apex-frame
+//
+// For a world point wp, we parametrize the line from top center
+// to wp, and intersect it with the infinite cone surface.
+
+vec3 inverseConeProject(vec3 wp) {
+  if (!isProjectionEnabled()) {
+    return wp;
+  }
+
+  vec3 axis = normalize(uConeAxis);
+  vec3 apex = uConeApex;
+  float k   = uConeSlope;
+  float zTop = uConeTopZ;
+
+  // Position relative to apex
+  vec3 relP = wp - apex;
+  float zP  = dot(relP, axis);
+  vec3 radialP = relP - zP * axis;
+  float rP2 = dot(radialP, radialP);
+
+  float dz = zP - zTop;
+  float k2 = k * k;
+
+  // Quadratic in lambda:  λ^2 rP^2 = k^2 (zTop + λ dz)^2
+  float A = rP2 - k2 * dz * dz;
+  float B = -2.0 * k2 * zTop * dz;
+  float C = -k2 * zTop * zTop;
+
+  float eps = 1e-6;
+  float D = B * B - 4.0 * A * C;
+  if (D < eps) {
+    return wp;
+  }
+
+  float sqrtD = sqrt(max(D, 0.0));
+  float lambda;
+
+  if (abs(A) < eps) {
+    if (abs(B) < eps) {
+      return wp;
+    }
+    lambda = -C / B;
+  } else {
+    float l1 = (-B + sqrtD) / (2.0 * A);
+    float l2 = (-B - sqrtD) / (2.0 * A);
+    bool l1Pos = (l1 > 0.0);
+    bool l2Pos = (l2 > 0.0);
+    if (l1Pos && l2Pos) {
+      lambda = min(l1, l2);
+    } else if (l1Pos) {
+      lambda = l1;
+    } else if (l2Pos) {
+      lambda = l2;
+    } else {
+      lambda = max(l1, l2);
+    }
+  }
+
+  // Intersection in apex-frame
+  vec3 radialI = lambda * radialP;
+  float zI = zTop + lambda * dz;
+  vec3 relI = radialI + zI * axis;
+
+  return apex + relI;
+}
+
+// ----------------- Surface selection wrapper -----------------
+
+vec3 applyProjection(vec3 wp) {
+  if (!isProjectionEnabled()) {
+    return wp;
+  }
+
+  if (uProjectionSurface > 0.5) {
+    // Cone mode
+    return inverseConeProject(wp);
+  } else {
+    // Sphere mode
+    return inverseStereoProject(wp);
+  }
+}
+
+
+// ----------------- Hemisphere culling (sphere only) ----------
 
     // bool shouldCullHemisphere(vec3 originalWp){
     //   if (uCullBackfaces <= 0.5 || uProjectionStrength <= 0.0) return false;
@@ -1019,7 +1143,7 @@ bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
                 /vec4\s+start\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceStart\s*,\s*1\.0\s*\)\s*;/,
                 `
     vec3 wpStart = (modelMatrix * vec4( instanceStart, 1.0 )).xyz;
-    vec3 pStart  = inverseStereoProject(wpStart);
+    vec3 pStart  = applyProjection(wpStart);
     vec4 start;
   `
             );
@@ -1027,7 +1151,7 @@ bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
                 /vec4\s+end\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceEnd\s*,\s*1\.0\s*\)\s*;/,
                 `
     vec3 wpEnd = (modelMatrix * vec4( instanceEnd, 1.0 )).xyz;
-    vec3 pEnd  = inverseStereoProject(wpEnd);
+    vec3 pEnd  = applyProjection(wpEnd);
     vec4 end;
     bool cullSegment = shouldCullHemisphere(wpStart, pStart) || shouldCullHemisphere(wpEnd, pEnd);
     if (cullSegment) {
@@ -1047,7 +1171,7 @@ bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
                     '#include <project_vertex>',
                     `
       vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
-      vec3 p  = inverseStereoProject(wp);
+      vec3 p  = applyProjection(wp);
       if (shouldCullHemisphere(wp, p)) {
         gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
       } else {
@@ -1063,7 +1187,7 @@ bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
                     '#include <project_vertex>',
                     `
       vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
-      vec3 p  = inverseStereoProject(wp);
+      vec3 p  = applyProjection(wp);
       if (shouldCullHemisphere(wp, p)) {
         gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
       } else {
