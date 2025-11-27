@@ -353,12 +353,16 @@ const StereoUniforms = {
     uInv2R: { value: 0.0 },               // 1 / (2 * R)
     uCameraDirFromCenter: { value: new THREE.Vector3(0, 0, 1) }, // normalized
 
-    // NEW: cone + mode
+    // cone + mode
     uProjectionSurface: { value: 0.0 },             // 0 = sphere, 1 = cone
     uConeApex: { value: new THREE.Vector3() },      // apex in world
     uConeAxis: { value: new THREE.Vector3(0, 1, 0) }, // unit axis (upwards)
     uConeSlope: { value: 1.0 },                     // k = r_ground / hc
     uConeTopZ: { value: 1.0 },                      // distance apex → cone top (along axis)
+
+    // NEW: view radius / ground center for cone
+    uViewRadius: { value: 1000.0 },
+    uGroundCenter: { value: new THREE.Vector3() },
 };
 
 const RoadFatLines = new Set();
@@ -548,6 +552,11 @@ function makeSphereController(view, {
         StereoUniforms.uConeAxis.value.copy(normal);
         StereoUniforms.uConeSlope.value = kSlope;
         StereoUniforms.uConeTopZ.value = zTop;
+
+        StereoUniforms.uViewRadius.value = rView;
+        StereoUniforms.uGroundCenter.value.copy(G);
+
+
 
         view.notifyChange(true);
     }
@@ -920,6 +929,10 @@ function makeStereoProjectMaterial(mat) {
         shader.uniforms.uConeSlope = StereoUniforms.uConeSlope;
         shader.uniforms.uConeTopZ = StereoUniforms.uConeTopZ;
 
+        shader.uniforms.uViewRadius = StereoUniforms.uViewRadius;     // NEW
+        shader.uniforms.uGroundCenter = StereoUniforms.uGroundCenter;   // NEW
+
+
         let vs = shader.vertexShader;
         const inject = /* glsl */`
 uniform vec3  uSphereCenter;
@@ -940,6 +953,9 @@ uniform vec3  uConeApex;
 uniform vec3  uConeAxis;           // unit vector
 uniform float uConeSlope;          // k = r_ground / hc
 uniform float uConeTopZ;           // z_t (apex → top center along axis)
+
+uniform float uViewRadius;      // NEW
+uniform vec3  uGroundCenter;    // NEW
 
 // Helper: is stereographic projection actually active?
 bool isProjectionEnabled() {
@@ -1010,7 +1026,21 @@ vec3 inverseConeProject(vec3 wp) {
     return wp;
   }
 
+  // --- Do NOT project inside the view radius on the ground plane ----
+  // Project wp onto the ground plane through the local vertical (uConeAxis)
   vec3 axis = normalize(uConeAxis);
+  vec3 vGC = wp - uGroundCenter;
+  float hAlong = dot(vGC, axis);
+  vec3 radialGC = vGC - hAlong * axis;  // component in the ground plane
+  float r2Ground = dot(radialGC, radialGC);
+  float vr2 = uViewRadius * uViewRadius;
+
+  // Small epsilon so points exactly on the circle are treated as "inside"
+  if (r2Ground <= vr2 + 1e-6) {
+    return wp;
+  }
+
+
   vec3 apex = uConeApex;
   float k   = uConeSlope;
   float zTop = uConeTopZ;
