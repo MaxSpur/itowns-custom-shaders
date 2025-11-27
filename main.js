@@ -20,6 +20,7 @@ const placement = {
 const view = new itowns.GlobeView(viewerDiv, placement);
 const RoadFatLineRoot = new THREE.Group();
 RoadFatLineRoot.name = 'RoadFatLines';
+RoadFatLineRoot.frustumCulled = false;
 view.scene.add(RoadFatLineRoot);
 
 // Elevation
@@ -78,6 +79,38 @@ const ROAD_WIDTH_BASE = {
     'Escalier': 1,
 };
 
+const RoadFeatureRegistry = {
+    keyToBatchId: new Map(),
+    widthByBatchId: new Map(),
+    nextBatchId: 0,
+};
+
+function getFeatureKey(props = {}) {
+    return props.id || props.ID || props.pk || props.pkuid || props.id_troncon || props.numero || props.gid || props.IDENT || props.CODE || null;
+}
+
+function registerRoadFeature(props = {}) {
+    const key = getFeatureKey(props);
+    let batchId;
+    if (key) {
+        if (RoadFeatureRegistry.keyToBatchId.has(key)) {
+            batchId = RoadFeatureRegistry.keyToBatchId.get(key);
+        } else {
+            batchId = RoadFeatureRegistry.nextBatchId++;
+            RoadFeatureRegistry.keyToBatchId.set(key, batchId);
+        }
+    } else {
+        batchId = RoadFeatureRegistry.nextBatchId++;
+    }
+    const width = ROAD_WIDTH_BASE[props.nature] || 2;
+    RoadFeatureRegistry.widthByBatchId.set(batchId, width);
+    return batchId;
+}
+
+function getWidthForBatch(batchId) {
+    return RoadFeatureRegistry.widthByBatchId.get(batchId);
+}
+
 // Global State
 const RoadGlobalState = {
     visible: true,
@@ -89,7 +122,176 @@ const RoadGlobalState = {
     useProjection: true,
     cullBackfaces: false,
     disableFrustumCulling: false,
+    useIndividualWidths: true,
 };
+const ROAD_UI_STORAGE_KEY = 'itowns-road-ui-v1';
+const RoadUIStorage = (() => {
+    let cache = {};
+    if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+            const raw = window.localStorage.getItem(ROAD_UI_STORAGE_KEY);
+            if (raw) {
+                cache = JSON.parse(raw) || {};
+            }
+        } catch (err) {
+            console.warn('Failed to parse stored road UI state', err);
+            cache = {};
+        }
+    }
+    return {
+        get() {
+            return cache;
+        },
+        save(patch = {}) {
+            cache = { ...cache, ...patch };
+            if (typeof window !== 'undefined' && window.localStorage) {
+                try {
+                    window.localStorage.setItem(ROAD_UI_STORAGE_KEY, JSON.stringify(cache));
+                } catch (err) {
+                    console.warn('Failed to persist road UI state', err);
+                }
+            }
+        }
+    };
+})();
+
+function applyPersistedRoadGlobalState() {
+    const saved = RoadUIStorage.get();
+    if (!saved) return;
+    if ('visible' in saved) RoadGlobalState.visible = !!saved.visible;
+    if ('widthMultiplier' in saved && Number.isFinite(saved.widthMultiplier)) RoadGlobalState.widthMultiplier = saved.widthMultiplier;
+    if ('useWorldUnits' in saved) RoadGlobalState.useWorldUnits = !!saved.useWorldUnits;
+    if ('depthTest' in saved) RoadGlobalState.depthTest = !!saved.depthTest;
+    if ('altitudeOffset' in saved && Number.isFinite(saved.altitudeOffset)) RoadGlobalState.altitudeOffset = saved.altitudeOffset;
+    if ('useProjection' in saved) RoadGlobalState.useProjection = !!saved.useProjection;
+    if ('cullBackfaces' in saved) RoadGlobalState.cullBackfaces = !!saved.cullBackfaces;
+    if ('disableFrustumCulling' in saved) RoadGlobalState.disableFrustumCulling = !!saved.disableFrustumCulling;
+    if ('useIndividualWidths' in saved) RoadGlobalState.useIndividualWidths = !!saved.useIndividualWidths;
+}
+
+function getPersistedSphereSettings() {
+    const saved = RoadUIStorage.get() || {};
+    const defaults = { radius: 1000, offset01: 1.0, opacity: 0.54 };
+    return {
+        radius: Number.isFinite(saved.sphereRadius) ? saved.sphereRadius : defaults.radius,
+        offset01: Number.isFinite(saved.sphereOffset) ? saved.sphereOffset : defaults.offset01,
+        opacity: Number.isFinite(saved.sphereOpacity) ? saved.sphereOpacity : defaults.opacity,
+    };
+}
+
+const PANEL_BASE_STYLE = {
+    position: 'absolute',
+    zIndex: 100,
+    background: '#171b2833',
+    border: '1px solid #2e344a',
+    borderRadius: '12px',
+    padding: '14px 16px',
+    color: '#fff',
+    fontFamily: 'Inter, system-ui, sans-serif',
+    fontSize: '13px',
+    minWidth: '240px',
+    maxWidth: '270px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '10px',
+    boxShadow: '0 14px 40px rgba(0,0,0,0.35)',
+    backdropFilter: 'blur(12px)',
+};
+const UI_BUTTON_STYLE = 'padding:7px 12px;border-radius:6px;background:transparent;color:inherit;font-size:12px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;cursor:pointer;';
+const TOGGLE_LABEL_STYLE = 'display:flex;align-items:center;gap:10px;font-size:13px;';
+const TOGGLE_TEXT_STYLE = 'flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+const UI_STYLE_TAG_ID = 'itowns-road-ui-styles';
+
+function applyPanelStyle(element, overrides = {}) {
+    Object.assign(element.style, PANEL_BASE_STYLE, overrides);
+}
+
+function ensureUIPanelStyles() {
+    if (document.getElementById(UI_STYLE_TAG_ID)) return;
+    const style = document.createElement('style');
+    style.id = UI_STYLE_TAG_ID;
+    style.textContent = `
+    .itowns-ui-panel button {
+        border: 1px solid #2e344a;
+        background: rgba(58,61,79,0.45);
+        color: #f4f7ff;
+        transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .itowns-ui-panel button:hover {
+        background: rgba(85, 101, 138, 0.7);
+        border-color: #55618c;
+    }
+    .itowns-ui-panel button:active {
+        background: #6573b5;
+        border-color: #8797d5;
+    }
+    .itowns-ui-panel button.is-active {
+        background: #5e6dd0;
+        border-color: #8ea0ff;
+        box-shadow: 0 0 12px rgba(102, 141, 255, 0.4);
+        color: #fff;
+    }
+    .itowns-ui-panel input[type="checkbox"] {
+        appearance: none;
+        width: 17px;
+        height: 17px;
+        border-radius: 4px;
+        border: 1px solid #4d5063;
+        background: rgba(255,255,255,0.08);
+        transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.25s ease;
+        cursor: pointer;
+    }
+    .itowns-ui-panel input[type="checkbox"]:hover {
+        border-color: #8aa4ff;
+        box-shadow: 0 0 6px rgba(122, 149, 255, 0.35);
+    }
+    .itowns-ui-panel input[type="checkbox"]:checked {
+        background: linear-gradient(135deg,#65c1ff,#5b7cff);
+        border-color: #86b8ff;
+        box-shadow: 0 0 8px rgba(87, 143, 255, 0.5);
+    }
+    .itowns-ui-panel input[type="range"] {
+        -webkit-appearance: none;
+        width: 100%;
+        height: 6px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.22);
+        outline: none;
+        cursor: pointer;
+    }
+    .itowns-ui-panel input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid #8fb4ff;
+        background: #fff;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    .itowns-ui-panel input[type="range"]:hover::-webkit-slider-thumb {
+        transform: scale(1.08);
+        border-color: #a7c6ff;
+    }
+    .itowns-ui-panel input[type="range"]::-moz-range-thumb {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid #8fb4ff;
+        background: #fff;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    .itowns-ui-panel input[type="range"]:hover::-moz-range-thumb {
+        transform: scale(1.08);
+        border-color: #a7c6ff;
+    }
+    `;
+    document.head.appendChild(style);
+}
+
+applyPersistedRoadGlobalState();
 
 // ----------------------------------------------------------------------------
 // 2b. SPHERE / STEREOGRAPHIC PROJECTION STATE
@@ -104,6 +306,11 @@ const StereoUniforms = {
     uProjectionStrength: { value: 0.0 },
     uCameraPos: { value: new THREE.Vector3() },
     uCullBackfaces: { value: 0.0 },
+    uSphereBasis: { value: new THREE.Matrix3() },
+    // New precomputed uniforms:
+    uTwoR: { value: 0.0 },                // 2 * R
+    uInv2R: { value: 0.0 },               // 1 / (2 * R)
+    uCameraDirFromCenter: { value: new THREE.Vector3(0, 0, 1) }, // normalized
 };
 
 const RoadFatLines = new Set();
@@ -114,42 +321,152 @@ function makeSphereController(view, {
     opacity = 0.5,
     color = 0xff0000,
 } = {}) {
-    const geom = new THREE.SphereGeometry(1, 32, 16);
-    const mat = new THREE.MeshBasicMaterial({
+    // --- Sphere mesh ---------------------------------------------------------
+    const sphereGeom = new THREE.SphereGeometry(1, 32, 16);
+    const sphereMat = new THREE.MeshBasicMaterial({
         color,
         transparent: true,
         opacity,
         depthWrite: false,
         side: THREE.DoubleSide,
     });
-    const mesh = new THREE.Mesh(geom, mat);
-    mesh.renderOrder = 20;
-    view.scene.add(mesh);
+    const sphereMesh = new THREE.Mesh(sphereGeom, sphereMat);
+    sphereMesh.renderOrder = 20;
+    view.scene.add(sphereMesh);
+
+    // --- Cone mesh (created as cylinder; we control radii) -------------------
+    const coneMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        wireframe: true,
+    });
+    const coneMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(1, 0, 1, 32, 1, true),
+        coneMat,
+    );
+    coneMesh.renderOrder = 19;
+    coneMesh.visible = false; // start in "sphere" mode
+    view.scene.add(coneMesh);
+
+    let displayMode = 'sphere'; // 'sphere' | 'cone'
+
+    // --- Parameter state: view radius + intersection ------------------------
+    // Use the incoming radius/offset as the initial sphere configuration, then
+    // derive an equivalent "view radius" so initial visuals stay unchanged.
+    const baseF = Math.sqrt(Math.max(1e-6, 2.0 * offset01 - offset01 * offset01));
+    const initialViewRadius = radius * baseF;
 
     const state = {
         groundECEF: new THREE.Vector3(),
         hasGround: false,
-        radius,
-        offset01,
+
+        // UI-level parameters
+        viewRadius: initialViewRadius, // intersection circle radius on ground
+        intersection01: offset01,      // controls intersection angle
+
+        sphereRadius: radius,
     };
 
     function updateTransform() {
         if (!state.hasGround) return;
 
         const normal = state.groundECEF.clone().normalize();
-        const lift = state.radius * (1.0 - state.offset01);
-        const center = state.groundECEF.clone().addScaledVector(normal, lift);
+        const G = state.groundECEF; // ground intersection center
 
-        mesh.position.copy(center);
-        mesh.scale.setScalar(state.radius);
+        // Clamp intersection parameter away from degenerate extremes
+        const tRaw = state.intersection01;
+        const t = Math.min(0.999, Math.max(0.001, tRaw));
 
-        mesh.lookAt(new THREE.Vector3(0, 0, 0));
-        mesh.rotateX(Math.PI / 2);
+        // View radius must stay positive
+        const rView = Math.max(1, state.viewRadius);
+
+        // f(t) = sqrt(2t - t^2) → relation between sphere radius and intersection radius
+        const f = Math.sqrt(Math.max(1e-6, 2.0 * t - t * t));
+
+        // Sphere radius such that intersection radius is exactly rView
+        const R = rView / f;
+        state.sphereRadius = R;
+
+        // Sphere center height above ground: h = R * (1 - t)
+        const h = R * (1.0 - t);
+        const C = G.clone().addScaledVector(normal, h);
+
+        // Sphere zenith
+        const Z = C.clone().addScaledVector(normal, R);
+
+        // --- Sphere placement ------------------------------------------------
+        sphereMesh.position.copy(C);
+        sphereMesh.scale.setScalar(R);
+        sphereMesh.lookAt(new THREE.Vector3(0, 0, 0));
+        sphereMesh.rotateX(Math.PI / 2);
+
+        // --- Cone placement --------------------------------------------------
+        //
+        // We want:
+        //  - base circle centered at Z (sphere zenith), radius = R
+        //  - apex below ground on same axis
+        //  - intersection with ground plane to be a circle of radius rView
+        //
+        // In 1D along the axis:
+        //   ground→zenith distance: h_z = h + R
+        //   apex depth below ground: h_c
+        //
+        // For a cone with apex at A (depth h_c) and base at Z (distance h_z above ground),
+        // radius scales linearly: rView = (h_c / (h_c + h_z)) * R
+        // → h_c = rView * h_z / (R - rView)
+        //
+        // As t → 1, R → rView and h_c → ∞, i.e. cylinder; we special-case that.
+
+        const h_z = h + R;                // ground → zenith
+        const denom = R - rView;
+        let topRadius = R;
+        let bottomRadius = 0;
+        let A;        // apex position
+        let height;   // total cone height (apex → zenith)
+
+        if (Math.abs(denom) < 1e-3) {
+            // Intersection ≈ 1: treat as vertical cylinder of radius rView
+            height = 2 * rView;
+            A = G.clone().addScaledVector(normal, -height / 2);
+            topRadius = rView;
+            bottomRadius = rView;
+        } else {
+            const h_c = (rView * h_z) / denom; // apex depth below ground
+            A = G.clone().addScaledVector(normal, -h_c);
+            height = h_c + h_z;
+            topRadius = R;  // base at zenith
+            bottomRadius = 0; // apex
+        }
+
+        const axis = Z.clone().sub(A);       // apex → zenith
+        const axisDir = axis.clone().normalize();
+        const mid = A.clone().addScaledVector(axis, 0.5);
+
+        // Rebuild cone geometry with proper radii and height
+        coneMesh.geometry.dispose();
+        coneMesh.geometry = new THREE.CylinderGeometry(
+            topRadius,       // radius at zenith (top, +Y)
+            bottomRadius,    // radius at apex (bottom, -Y)
+            height, // height
+            32, // radial segments
+            1, // height segments
+            false
+        );
+
+        const up = new THREE.Vector3(0, 1, 0);
+        const quat = new THREE.Quaternion().setFromUnitVectors(up, axisDir);
+        coneMesh.position.copy(mid);
+        coneMesh.quaternion.copy(quat);
+
         view.notifyChange(true);
     }
 
     return {
-        mesh,
+        mesh: sphereMesh,
+        coneMesh,
         hasGround() {
             return state.hasGround;
         },
@@ -158,24 +475,39 @@ function makeSphereController(view, {
             state.hasGround = true;
             updateTransform();
         },
+        // "Radius" slider → view radius (intersection radius on ground)
         setRadius(meters) {
-            state.radius = Math.max(1, +meters);
+            state.viewRadius = Math.max(1, +meters);
             updateTransform();
         },
+        // "Offset" slider → intersection parameter (angle)
         setOffset01(t) {
-            state.offset01 = Math.min(1, Math.max(0, +t));
+            state.intersection01 = Math.min(1, Math.max(0, +t));
             updateTransform();
         },
         setOpacity(a) {
-            mat.opacity = Math.min(1, Math.max(0, +a));
+            const clamped = Math.min(1, Math.max(0, +a));
+            sphereMat.opacity = clamped;
+            coneMat.opacity = clamped;
             view.notifyChange(true);
         },
         setColor(hex) {
-            mat.color.set(hex);
+            sphereMat.color.set(hex);
+            coneMat.color.set(hex);
             view.notifyChange(true);
+        },
+        setDisplayMode(mode) {
+            displayMode = mode === 'cone' ? 'cone' : 'sphere';
+            sphereMesh.visible = displayMode === 'sphere';
+            coneMesh.visible = displayMode === 'cone';
+            view.notifyChange(true);
+        },
+        getDisplayMode() {
+            return displayMode;
         },
     };
 }
+
 
 function initSphereAtLookAt(view, sphereCtl) {
     const c = view.controls.getLookAtCoordinate();
@@ -183,101 +515,161 @@ function initSphereAtLookAt(view, sphereCtl) {
     sphereCtl.setGroundFromWorld(new THREE.Vector3(groundECEF.x, groundECEF.y, groundECEF.z));
 }
 
-function bindSpherePicking(viewerDiv, view, sphereCtl, toggleKey = 's') {
-    let pickMode = false;
-    viewerDiv.addEventListener('keydown', (event) => {
-        if (event.key === toggleKey) pickMode = true;
-    });
-    viewerDiv.addEventListener('keyup', (event) => {
-        if (event.key === toggleKey) pickMode = false;
-    });
-    viewerDiv.addEventListener('click', (event) => {
-        if (!pickMode) return;
-        const picked = view.getPickingPositionFromDepth(view.eventToViewCoords(event));
-        if (picked) sphereCtl.setGroundFromWorld(picked);
-    });
-}
-
 function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.0, opacity: 0.5 }) {
-    const box = document.createElement('div');
-    Object.assign(box.style, {
-        position: 'absolute',
-        left: '10px',
-        top: '10px',
-        zIndex: 20,
-        background: '#313336bb',
-        border: '1px solid #222',
-        borderRadius: '7px',
-        padding: '8px 10px',
-        color: '#fff',
-        font: '13px/1.2 Arial, sans-serif',
-        minWidth: '220px',
+    ensureUIPanelStyles();
+    const panel = document.createElement('div');
+    applyPanelStyle(panel, { left: '10px', top: '10px', minWidth: '280px' });
+    panel.classList.add('itowns-ui-panel');
+    const state = {
+        radius: Number.isFinite(init.radius) ? init.radius : 1000,
+        offset01: Number.isFinite(init.offset01) ? init.offset01 : 1.0,
+        opacity: Number.isFinite(init.opacity) ? init.opacity : 0.5,
+    };
+    panel.innerHTML = `
+        <div style="font-weight:bold; font-size:14px; border-bottom:1px solid #555; padding-bottom:5px;">
+            Projection Sphere
+        </div>
+                <div style="display:flex; gap:8px; margin:6px 0 4px 0;">
+            <button id="sp-mode-sphere" style="${UI_BUTTON_STYLE}flex:1;" class="is-active">Sphere</button>
+            <button id="sp-mode-cone" style="${UI_BUTTON_STYLE}flex:1;">Cone</button>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>View Radius (m)</span>
+                <span id="sp-rv">${state.radius.toFixed(0)} m</span>
+            </div>
+            <input id="sp-r" type="range" min="10" max="20000" step="10" value="${state.radius}">
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Intersection</span>
+                <span id="sp-ov">${state.offset01.toFixed(2)}</span>
+            </div>
+            <input id="sp-o" type="range" min="0" max="1" step="0.01" value="${state.offset01}">
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Opacity</span>
+                <span id="sp-av">${state.opacity.toFixed(2)}</span>
+            </div>
+            <input id="sp-a" type="range" min="0" max="1" step="0.01" value="${state.opacity}">
+        </div>
+        <div style="display:flex; gap:8px; margin-top:4px;">
+            <button id="sp-center" style="${UI_BUTTON_STYLE}flex:1;">Place @ center</button>
+            <button id="sp-pick" style="${UI_BUTTON_STYLE}flex:1;">Pick (S)</button>
+        </div>
+    `;
+    document.body.appendChild(panel);
+
+    const radiusInput = panel.querySelector('#sp-r');
+    const offsetInput = panel.querySelector('#sp-o');
+    const opacityInput = panel.querySelector('#sp-a');
+    const radiusLabel = panel.querySelector('#sp-rv');
+    const offsetLabel = panel.querySelector('#sp-ov');
+    const opacityLabel = panel.querySelector('#sp-av');
+    const btnCenter = panel.querySelector('#sp-center');
+    const btnPick = panel.querySelector('#sp-pick');
+
+    const btnModeSphere = panel.querySelector('#sp-mode-sphere');
+    const btnModeCone = panel.querySelector('#sp-mode-cone');
+
+    const persistSphereState = () => {
+        RoadUIStorage.save({
+            sphereRadius: state.radius,
+            sphereOffset: state.offset01,
+            sphereOpacity: state.opacity,
+        });
+    };
+
+    sphereCtl.setRadius(state.radius);
+    sphereCtl.setOffset01(state.offset01);
+    sphereCtl.setOpacity(state.opacity);
+
+    const updateModeButtons = () => {
+        const mode = sphereCtl.getDisplayMode ? sphereCtl.getDisplayMode() : 'sphere';
+        btnModeSphere.classList.toggle('is-active', mode === 'sphere');
+        btnModeCone.classList.toggle('is-active', mode === 'cone');
+    };
+
+    btnModeSphere.addEventListener('click', () => {
+        if (sphereCtl.setDisplayMode) {
+            sphereCtl.setDisplayMode('sphere');
+        }
+        updateModeButtons();
     });
-    box.innerHTML = `
-    <div style="font-weight:700;margin-bottom:6px;">Projection sphere</div>
-    <label>Radius (m)
-      <input id="sp-r" type="range" min="10" max="20000" step="10" value="${init.radius}"/>
-    </label>
-    <div id="sp-rv" style="opacity:.8;margin-bottom:6px;">${init.radius}</div>
 
-    <label>Offset (0..1)
-      <input id="sp-o" type="range" min="0" max="1" step="0.01" value="${init.offset01}"/>
-    </label>
-    <div id="sp-ov" style="opacity:.8;margin-bottom:6px;">${init.offset01}</div>
+    btnModeCone.addEventListener('click', () => {
+        if (sphereCtl.setDisplayMode) {
+            sphereCtl.setDisplayMode('cone');
+        }
+        updateModeButtons();
+    });
 
-    <label>Opacity
-      <input id="sp-a" type="range" min="0" max="1" step="0.01" value="${init.opacity}"/>
-    </label>
-    <div id="sp-av" style="opacity:.8;margin-bottom:6px;">${init.opacity}</div>
+    // Initialize button state
+    updateModeButtons();
 
-    <div style="display:flex;gap:6px;margin-top:8px;">
-      <button id="sp-center" style="flex:1;background:#313336bb;border:1px solid #222;border-radius:6px;color:#fff;height:28px;">Place @ center</button>
-      <button id="sp-pick"   style="flex:1;background:#313336bb;border:1px solid #222;border-radius:6px;color:#fff;height:28px;">Pick (S)</button>
-    </div>
-  `;
-    document.body.appendChild(box);
+    radiusInput.addEventListener('input', (e) => {
+        state.radius = parseFloat(e.target.value);
+        radiusLabel.textContent = `${state.radius.toFixed(0)} m`;
+        sphereCtl.setRadius(state.radius);
+        persistSphereState();
+    });
+    offsetInput.addEventListener('input', (e) => {
+        state.offset01 = parseFloat(e.target.value);
+        offsetLabel.textContent = state.offset01.toFixed(2);
+        sphereCtl.setOffset01(state.offset01);
+        persistSphereState();
+    });
+    opacityInput.addEventListener('input', (e) => {
+        state.opacity = parseFloat(e.target.value);
+        opacityLabel.textContent = state.opacity.toFixed(2);
+        sphereCtl.setOpacity(state.opacity);
+        persistSphereState();
+    });
 
-    const r = box.querySelector('#sp-r');
-    const o = box.querySelector('#sp-o');
-    const a = box.querySelector('#sp-a');
-    const rv = box.querySelector('#sp-rv');
-    const ov = box.querySelector('#sp-ov');
-    const av = box.querySelector('#sp-av');
-    const bCenter = box.querySelector('#sp-center');
-    const bPick = box.querySelector('#sp-pick');
-
-    sphereCtl.setRadius(+r.value);
-    sphereCtl.setOffset01(+o.value);
-    sphereCtl.setOpacity(+a.value);
-
-    r.oninput = () => { rv.textContent = r.value; sphereCtl.setRadius(+r.value); };
-    o.oninput = () => { ov.textContent = o.value; sphereCtl.setOffset01(+o.value); };
-    a.oninput = () => { av.textContent = a.value; sphereCtl.setOpacity(+a.value); };
-
-    bCenter.onclick = () => {
+    btnCenter.addEventListener('click', () => {
         const c = view.controls.getLookAtCoordinate();
         const g = c.as(view.referenceCrs);
         sphereCtl.setGroundFromWorld(new THREE.Vector3(g.x, g.y, g.z));
+    });
+
+    let buttonPicking = false;
+    let keyPicking = false;
+    const updatePickVisual = () => {
+        const active = buttonPicking || keyPicking;
+        btnPick.classList.toggle('is-active', active);
     };
 
-    let picking = false;
-    const setButton = (active) => {
-        bPick.style.background = active ? '#222' : '#313336bb';
-    };
+    btnPick.addEventListener('click', () => {
+        buttonPicking = !buttonPicking;
+        updatePickVisual();
+    });
+
     viewerDiv.addEventListener('keydown', (event) => {
         if (event.key === 's') {
-            picking = true;
-            setButton(true);
+            keyPicking = true;
+            updatePickVisual();
         }
     });
     viewerDiv.addEventListener('keyup', (event) => {
         if (event.key === 's') {
-            picking = false;
-            setButton(false);
+            keyPicking = false;
+            updatePickVisual();
         }
     });
 
-    return box;
+    viewerDiv.addEventListener('click', (event) => {
+        if (!(buttonPicking || keyPicking)) return;
+        const picked = view.getPickingPositionFromDepth(view.eventToViewCoords(event));
+        if (picked) sphereCtl.setGroundFromWorld(picked);
+        if (keyPicking) {
+            keyPicking = false;
+            updatePickVisual();
+        }
+    });
+
+    updatePickVisual();
+    return panel;
 }
 
 const sphereCtl = makeSphereController(view, {
@@ -290,8 +682,7 @@ SphereProjectionState.controller = sphereCtl;
 
 view.addEventListener(itowns.GLOBE_VIEW_EVENTS.GLOBE_INITIALIZED, () => {
     initSphereAtLookAt(view, sphereCtl);
-    bindSpherePicking(viewerDiv, view, sphereCtl, 's');
-    createSphereWidget(view, sphereCtl, { radius: 1000, offset01: 1.0, opacity: 0.54 });
+    createSphereWidget(view, sphereCtl, getPersistedSphereSettings());
 });
 
 function makeStereoProjectMaterial(mat) {
@@ -303,56 +694,126 @@ function makeStereoProjectMaterial(mat) {
         shader.uniforms.uProjectionStrength = StereoUniforms.uProjectionStrength;
         shader.uniforms.uCameraPos = StereoUniforms.uCameraPos;
         shader.uniforms.uCullBackfaces = StereoUniforms.uCullBackfaces;
+        shader.uniforms.uSphereBasis = StereoUniforms.uSphereBasis;
+
+
+        // NEW: bind the precomputed uniforms too
+        shader.uniforms.uTwoR = StereoUniforms.uTwoR;
+        shader.uniforms.uInv2R = StereoUniforms.uInv2R;
+        shader.uniforms.uCameraDirFromCenter = StereoUniforms.uCameraDirFromCenter;
 
         let vs = shader.vertexShader;
         const inject = /* glsl */`
-    uniform vec3  uSphereCenter;
-    uniform float uSphereR;
-    uniform float uProjectionStrength;
-    uniform vec3  uCameraPos;
-    uniform float uCullBackfaces;
-    mat3 basisFromUp(vec3 up){
-      vec3 n = normalize(up);
-      vec3 a = (abs(n.y) < 0.99) ? vec3(0.0,1.0,0.0) : vec3(1.0,0.0,0.0);
-      vec3 x = normalize(cross(a, n));
-      vec3 z = cross(n, x);
-      return mat3(x, n, z);
-    }
-    vec3 terrainToSphere(vec3 s){
-      float h_inv = 0.5 - s.y;
-      float hh = h_inv * h_inv;
-      float ss = s.x * s.x;
-      float tt = s.z * s.z;
-      float lower = hh - 2.0 * h_inv + ss + tt + 1.0;
-      float x = ((1.0 - h_inv) * s.x) / lower;
-      float y = 0.5 - (ss + tt) / lower;
-      float z = ((1.0 - h_inv) * s.z) / lower;
-      return vec3(x, y, z);
-    }
-    vec3 inverseStereoProject(vec3 wp){
-      if (uProjectionStrength <= 0.0) return wp;
-      float R = uSphereR;
-      if (R <= 0.0) return wp;
-      R = max(R, 1e-3);
-      vec3  C = uSphereCenter;
-      float d = distance(wp, C);
-      if (d <= R) return wp;
-      mat3 B = basisFromUp(C);
-      vec3 s = transpose(B) * ((C - wp) / (2.0*R));
-      vec3 q = terrainToSphere(s);
-      return C - (B * (q * (2.0*R)));
-    }
+uniform vec3  uSphereCenter;
+uniform float uSphereR;
+uniform float uProjectionStrength;
+uniform vec3  uCameraPos;
+uniform float uCullBackfaces;
+uniform mat3  uSphereBasis;
 
-    bool shouldCullHemisphere(vec3 originalWp){
-      if (uCullBackfaces <= 0.5 || uProjectionStrength <= 0.0) return false;
-      float R = uSphereR;
-      if (R <= 0.0) return false;
-      float d = distance(originalWp, uSphereCenter);
-      if (d <= R + 1e-3) return false;
-      vec3 normal = normalize(originalWp - uSphereCenter);
-      vec3 camDirFromCenter = normalize(uCameraPos - uSphereCenter);
-      return dot(normal, camDirFromCenter) > 0.0;
-    }
+// New precomputed uniforms:
+uniform float uTwoR;              // 2 * uSphereR
+uniform float uInv2R;             // 1 / (2 * uSphereR)
+uniform vec3  uCameraDirFromCenter; // normalized (camera - center)
+
+// Helper: is stereographic projection actually active?
+bool isProjectionEnabled() {
+  return (uProjectionStrength > 0.0 && uSphereR > 0.0);
+}
+
+vec3 terrainToSphere(vec3 s) {
+  // h = 0.5 - s.y
+  float h = 0.5 - s.y;
+
+  // squared radius in xz-plane
+  float r2 = s.x * s.x + s.z * s.z;
+
+  // denominator: h^2 - 2h + r2 + 1
+  float h2   = h * h;
+  float denom = h2 - 2.0 * h + r2 + 1.0;
+
+  // common scale factor for x and z
+  float k = (1.0 - h) / denom;
+
+  // y uses the same denom but different formula
+  float y = 0.5 - r2 / denom;
+
+  return vec3(k * s.x, y, k * s.z);
+}
+
+vec3 inverseStereoProject(vec3 wp) {
+  if (!isProjectionEnabled()) {
+    return wp;
+  }
+
+  float R = uSphereR;
+  vec3  C = uSphereCenter;
+
+  // Vector from center to world point
+  vec3 v  = wp - C;
+  float d2 = dot(v, v);
+  float R2 = R * R;
+
+  // Inside or on the sphere: no reprojection
+  if (d2 <= R2) {
+    return wp;
+  }
+
+  // (C - wp) / (2R) = -v / (2R) = -v * uInv2R
+  vec3 s = transpose(uSphereBasis) * (-v * uInv2R);
+  vec3 q = terrainToSphere(s);
+  return C - (uSphereBasis * (q * uTwoR));
+}
+
+    // bool shouldCullHemisphere(vec3 originalWp){
+    //   if (uCullBackfaces <= 0.5 || uProjectionStrength <= 0.0) return false;
+    //   float R = uSphereR;
+    //   if (R <= 0.0) return false;
+    //   float d = distance(originalWp, uSphereCenter);
+    //   if (d <= R + 1e-3) return false;
+    //   vec3 normal = normalize(originalWp - uSphereCenter);
+    //   vec3 camDirFromCenter = normalize(uCameraPos - uSphereCenter);
+    //   return dot(normal, camDirFromCenter) > 0.0;
+    // }
+
+bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
+  if (uCullBackfaces <= 0.5 || !isProjectionEnabled()) {
+    return false;
+  }
+
+  float R = uSphereR;
+  if (R <= 0.0) {
+    return false;
+  }
+
+  vec3 C = uSphereCenter;
+
+  // 1) Use ORIGINAL position to decide if the point is inside the sphere.
+  //    Anything inside (or on) should NEVER be culled: these are your
+  //    "unprojected" roads on the terrain, which must remain visible.
+  vec3 v  = originalWp - C;
+  float d2 = dot(v, v);
+  float R2 = R * R;
+  float eps = 1e-3;
+  if (d2 <= R2 + eps) {
+    return false;
+  }
+
+  // 2) For points outside the sphere (i.e., actually projected onto it),
+  //    use the projected point to test which hemisphere we are on.
+  
+  vec3 n = projectedP - C; // outward normal; magnitude doesn't matter for sign
+
+  //   vec3 camDirFromCenter = normalize(uCameraPos - C);
+
+  // Pre-normalized on CPU:
+  vec3 camDirFromCenter = uCameraDirFromCenter;
+
+
+  // outward normal faces the camera → outside hemisphere → HIDE it
+  // (so we see the inside).
+  return dot(n, camDirFromCenter) > 0.0;
+}
   `;
 
         if (mat.isLineMaterial === true) {
@@ -371,10 +832,10 @@ function makeStereoProjectMaterial(mat) {
     vec3 wpEnd = (modelMatrix * vec4( instanceEnd, 1.0 )).xyz;
     vec3 pEnd  = inverseStereoProject(wpEnd);
     vec4 end;
-    bool cullSegment = shouldCullHemisphere(wpStart) || shouldCullHemisphere(wpEnd);
+    bool cullSegment = shouldCullHemisphere(wpStart, pStart) || shouldCullHemisphere(wpEnd, pEnd);
     if (cullSegment) {
       start = vec4(1e9, 1e9, 1e9, 1.0);
-      end = vec4(1e9, 1e9, 1e9, 1.0);
+      end   = vec4(1e9, 1e9, 1e9, 1.0);
     } else {
       start = viewMatrix * vec4( pStart, 1.0 );
       end   = viewMatrix * vec4( pEnd, 1.0 );
@@ -388,15 +849,15 @@ function makeStereoProjectMaterial(mat) {
                 shader.vertexShader.replace(
                     '#include <project_vertex>',
                     `
-          vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
-          vec3 p = inverseStereoProject(wp);
-          if (shouldCullHemisphere(wp)) {
-            gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
-          } else {
-            vec4 mv = viewMatrix * vec4(p, 1.0);
-            gl_Position = projectionMatrix * mv;
-          }
-        `
+      vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      vec3 p  = inverseStereoProject(wp);
+      if (shouldCullHemisphere(wp, p)) {
+        gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
+      } else {
+        vec4 mv = viewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `
                 );
         } else if (mat.isMeshBasicMaterial || mat.isMeshPhongMaterial || mat.isMeshStandardMaterial) {
             shader.vertexShader =
@@ -404,15 +865,15 @@ function makeStereoProjectMaterial(mat) {
                 shader.vertexShader.replace(
                     '#include <project_vertex>',
                     `
-          vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
-          vec3 p = inverseStereoProject(wp);
-          if (shouldCullHemisphere(wp)) {
-            gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
-          } else {
-            vec4 mv = viewMatrix * vec4(p, 1.0);
-            gl_Position = projectionMatrix * mv;
-          }
-        `
+      vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      vec3 p  = inverseStereoProject(wp);
+      if (shouldCullHemisphere(wp, p)) {
+        gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
+      } else {
+        vec4 mv = viewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `
                 );
         } else {
             console.warn('Stereo projection: unsupported material type', mat?.type);
@@ -443,9 +904,189 @@ const _scratchVecA = new THREE.Vector3();
 const _scratchVecB = new THREE.Vector3();
 const _scratchMatrix = new THREE.Matrix4();
 const _scratchRootInverse = new THREE.Matrix4();
-const RoadMaterialCache = new Map();
+const _scratchRoadRootInverse = new THREE.Matrix4();
+
+const _rendererSize = new THREE.Vector2();
+let _lastRendererWidth = -1;
+let _lastRendererHeight = -1;
+const _tmpCamDir = new THREE.Vector3(); // scratch
+
 const RoadTileAnchors = new Map();
 const tempColor = new THREE.Color();
+const RoadMaterialCache = new Map();
+const _basisUp = new THREE.Vector3();
+const _basisRef = new THREE.Vector3();
+const _basisX = new THREE.Vector3();
+const _basisZ = new THREE.Vector3();
+
+function resetProcessedFlag(root) {
+    root.traverse((node) => {
+        if (node.userData) {
+            delete node.userData.hasProcessedFatLine;
+            if (node.userData.isFatLine && node.parent) {
+                node.parent.remove(node);
+                RoadFatLines.delete(node);
+            }
+        }
+    });
+}
+
+function appendGeometryToGroup(sourceGeom, group, transformMatrix) {
+    if (!sourceGeom) return;
+    const posAttr = sourceGeom.attributes?.position;
+    if (!posAttr) return;
+
+    const colAttr = sourceGeom.attributes?.color;
+    const indexAttr = sourceGeom.index;
+
+    if (!colAttr && group.hasColors) {
+        group.hasColors = false;
+        group.colors.length = 0;
+    }
+
+    const useColors = group.hasColors && !!colAttr;
+    const useTransform = !!transformMatrix;
+
+    const pushSegment = (aIdx, bIdx) => {
+        const ax = posAttr.getX(aIdx);
+        const ay = posAttr.getY(aIdx);
+        const az = posAttr.getZ(aIdx);
+
+        const bx = posAttr.getX(bIdx);
+        const by = posAttr.getY(bIdx);
+        const bz = posAttr.getZ(bIdx);
+
+        if (!isFinite3(ax, ay, az) || !isFinite3(bx, by, bz)) return;
+        if (isNearOrigin(ax, ay, az) && isNearOrigin(bx, by, bz)) return;
+
+        if (useTransform) {
+            _scratchVecA.set(ax, ay, az).applyMatrix4(transformMatrix);
+            _scratchVecB.set(bx, by, bz).applyMatrix4(transformMatrix);
+            group.positions.push(
+                _scratchVecA.x, _scratchVecA.y, _scratchVecA.z,
+                _scratchVecB.x, _scratchVecB.y, _scratchVecB.z
+            );
+        } else {
+            group.positions.push(ax, ay, az, bx, by, bz);
+        }
+
+        if (useColors) {
+            group.colors.push(
+                colAttr.getX(aIdx), colAttr.getY(aIdx), colAttr.getZ(aIdx),
+                colAttr.getX(bIdx), colAttr.getY(bIdx), colAttr.getZ(bIdx)
+            );
+        }
+    };
+
+    if (indexAttr) {
+        for (let i = 0; i < indexAttr.count; i += 2) {
+            pushSegment(indexAttr.getX(i), indexAttr.getX(i + 1));
+        }
+    } else {
+        for (let i = 0; i < posAttr.count; i += 2) {
+            pushSegment(i, i + 1);
+        }
+    }
+}
+
+let rebuildPending = false;
+function rebuildAllRoadTiles() {
+    if (rebuildPending) return;
+    rebuildPending = true;
+    const entries = Array.from(RoadTileAnchors.entries());
+    RoadTileAnchors.clear();
+    for (const [, entry] of entries) {
+        cleanupAnchorEntry(entry);
+        const featureRoot = entry.featureRoot;
+        if (featureRoot) {
+            if (featureRoot.userData) {
+                delete featureRoot.userData.roadTileKey;
+                delete featureRoot.userData.roadAnchor;
+                delete featureRoot.userData.fatLines;
+            }
+            resetProcessedFlag(featureRoot);
+            processRoadTileRoot(featureRoot);
+        }
+    }
+    rebuildPending = false;
+}
+
+function createFatLineGeometriesByBatch(sourceGeom, transformMatrix) {
+    const posAttr = sourceGeom?.attributes?.position;
+    const colAttr = sourceGeom?.attributes?.color;
+    const batchAttr = sourceGeom?.attributes?.batchId;
+    const indexAttr = sourceGeom?.index;
+    if (!posAttr) return [];
+
+    const hasColorsAttr = !!colAttr;
+    const hasBatchAttr = !!batchAttr;
+    const groups = new Map();
+
+    function getGroup(batchId) {
+        const key = hasBatchAttr ? batchId : 0;
+        if (!groups.has(key)) {
+            groups.set(key, { positions: [], colors: [] });
+        }
+        return groups.get(key);
+    }
+
+    function addSegment(aIdx, bIdx) {
+        const ax = posAttr.getX(aIdx);
+        const ay = posAttr.getY(aIdx);
+        const az = posAttr.getZ(aIdx);
+
+        const bx = posAttr.getX(bIdx);
+        const by = posAttr.getY(bIdx);
+        const bz = posAttr.getZ(bIdx);
+
+        if (!isFinite3(ax, ay, az) || !isFinite3(bx, by, bz)) return;
+        if (isNearOrigin(ax, ay, az) && isNearOrigin(bx, by, bz)) return;
+
+        const batchId = hasBatchAttr ? batchAttr.getX(aIdx) : 0;
+        const group = getGroup(batchId);
+
+        if (transformMatrix) {
+            _scratchVecA.set(ax, ay, az).applyMatrix4(transformMatrix);
+            _scratchVecB.set(bx, by, bz).applyMatrix4(transformMatrix);
+            group.positions.push(
+                _scratchVecA.x, _scratchVecA.y, _scratchVecA.z,
+                _scratchVecB.x, _scratchVecB.y, _scratchVecB.z
+            );
+        } else {
+            group.positions.push(ax, ay, az, bx, by, bz);
+        }
+
+        if (hasColorsAttr) {
+            group.colors.push(
+                colAttr.getX(aIdx), colAttr.getY(aIdx), colAttr.getZ(aIdx),
+                colAttr.getX(bIdx), colAttr.getY(bIdx), colAttr.getZ(bIdx)
+            );
+        }
+    }
+
+    if (indexAttr) {
+        for (let i = 0; i < indexAttr.count; i += 2) {
+            addSegment(indexAttr.getX(i), indexAttr.getX(i + 1));
+        }
+    } else {
+        for (let i = 0; i < posAttr.count; i += 2) {
+            addSegment(i, i + 1);
+        }
+    }
+
+    const results = [];
+    for (const [batchId, data] of groups.entries()) {
+        if (!data.positions.length) continue;
+        const hasValidColors = hasColorsAttr && data.colors.length === data.positions.length;
+        results.push({
+            positions: data.positions.slice(),
+            colors: hasValidColors ? data.colors.slice() : null,
+            hasColors: hasValidColors,
+            batchId: hasBatchAttr ? batchId : null,
+        });
+    }
+    return results;
+}
 
 function getFeatureTileKey(featureRoot) {
     const ext = featureRoot?.extent;
@@ -494,84 +1135,90 @@ function cleanupFeatureFatLines(featureRoot) {
     }
 }
 
-function appendGeometryToGroup(sourceGeom, group, transformMatrix) {
-    if (!sourceGeom) return;
-    const posAttr = sourceGeom.attributes?.position;
-    if (!posAttr) return;
+function syncMaterialResolutions() {
+    for (const mat of RoadMaterialCache.values()) {
+        if (!mat?.resolution) continue;
+        mat.resolution.copy(RoadGlobalState.resolution);
+    }
+}
 
-    const colAttr = sourceGeom.attributes?.color;
-    const indexAttr = sourceGeom.index;
+function applyGlobalStateToMaterials() {
+    for (const mat of RoadMaterialCache.values()) {
+        if (!mat) continue;
+        const base = mat.userData?.baseWidth || 2;
+        mat.linewidth = base * RoadGlobalState.widthMultiplier;
+        mat.worldUnits = RoadGlobalState.useWorldUnits;
 
-    if (!colAttr && group.useColors) {
-        group.useColors = false;
-        group.colors.length = 0;
+        const isDefaultMode = RoadGlobalState.depthTest;
+        mat.depthTest = isDefaultMode;
+        mat.depthWrite = isDefaultMode;
+        mat.transparent = !isDefaultMode;
+        mat.polygonOffset = isDefaultMode;
+        mat.needsUpdate = true;
+
+        mat.needsUpdate = true;
     }
 
-    const useColors = group.useColors && !!colAttr;
-    const useTransform = !!transformMatrix;
-
-    function addSegment(aIdx, bIdx) {
-        const ax = posAttr.getX(aIdx);
-        const ay = posAttr.getY(aIdx);
-        const az = posAttr.getZ(aIdx);
-
-        const bx = posAttr.getX(bIdx);
-        const by = posAttr.getY(bIdx);
-        const bz = posAttr.getZ(bIdx);
-
-        if (!isFinite3(ax, ay, az) || !isFinite3(bx, by, bz)) return;
-        if (isNearOrigin(ax, ay, az) && isNearOrigin(bx, by, bz)) return;
-
-        if (useTransform) {
-            _scratchVecA.set(ax, ay, az).applyMatrix4(transformMatrix);
-            _scratchVecB.set(bx, by, bz).applyMatrix4(transformMatrix);
-            group.positions.push(
-                _scratchVecA.x, _scratchVecA.y, _scratchVecA.z,
-                _scratchVecB.x, _scratchVecB.y, _scratchVecB.z
-            );
-        } else {
-            group.positions.push(ax, ay, az, bx, by, bz);
-        }
-
-        if (useColors) {
-            group.colors.push(
-                colAttr.getX(aIdx), colAttr.getY(aIdx), colAttr.getZ(aIdx),
-                colAttr.getX(bIdx), colAttr.getY(bIdx), colAttr.getZ(bIdx)
-            );
-        }
+    for (const obj of RoadFatLines) {
+        if (!obj) continue;
+        obj.renderOrder = RoadGlobalState.depthTest ? 0 : 999;
+        obj.position.z = RoadGlobalState.altitudeOffset;
+        obj.updateMatrix();
     }
 
-    if (indexAttr) {
-        for (let i = 0; i < indexAttr.count; i += 2) {
-            addSegment(indexAttr.getX(i), indexAttr.getX(i + 1));
-        }
-    } else {
-        for (let i = 0; i < posAttr.count; i += 2) {
-            addSegment(i, i + 1);
-        }
-    }
+    notifyRoadLayers();
+    view.notifyChange(true);
 }
 
 function addMeshToGeometryGroups(mesh, groups, transformMatrix) {
     if (!mesh.geometry) return;
     const props = getFeatureProperties(mesh);
     const natureName = props?.nature || 'unknown';
-    const baseWidth = ROAD_WIDTH_BASE[natureName] || 2;
-    const key = `${natureName}|${baseWidth}`;
+    const baseWidthNature = ROAD_WIDTH_BASE[natureName] || 2;
+    const color = ROAD_COLOR[natureName] || '#FF00FF';
+    const hasColorAttr = !!mesh.geometry.attributes?.color;
 
-    if (!groups.has(key)) {
-        groups.set(key, {
-            nature: natureName,
-            baseWidth,
-            color: ROAD_COLOR[natureName] || '#FF00FF',
-            positions: [],
-            colors: [],
-            useColors: true,
-        });
+    if (!RoadGlobalState.useIndividualWidths) {
+        const baseWidth = 2;
+        const key = `uniform|${color}|${hasColorAttr ? 1 : 0}`;
+        if (!groups.has(key)) {
+            groups.set(key, {
+                color,
+                positions: [],
+                colors: [],
+                hasColors: hasColorAttr,
+                baseWidth,
+            });
+        }
+        const group = groups.get(key);
+        appendGeometryToGroup(mesh.geometry, group, transformMatrix);
+    } else {
+        const geometries = createFatLineGeometriesByBatch(mesh.geometry, transformMatrix);
+        for (const { positions, colors, hasColors, batchId } of geometries) {
+            const widthFromBatch = (batchId !== null && batchId !== undefined) ? getWidthForBatch(batchId) : undefined;
+            const baseWidth = widthFromBatch || baseWidthNature;
+            const key = `${baseWidth}|${color}|${hasColors ? 1 : 0}`;
+
+            if (!groups.has(key)) {
+                groups.set(key, {
+                    color,
+                    positions: [],
+                    colors: [],
+                    hasColors,
+                    baseWidth,
+                });
+            }
+
+            const group = groups.get(key);
+            group.positions.push(...positions);
+            if (hasColors && colors) {
+                group.colors.push(...colors);
+            } else {
+                group.hasColors = false;
+                group.colors.length = 0;
+            }
+        }
     }
-
-    const group = groups.get(key);
-    appendGeometryToGroup(mesh.geometry, group, transformMatrix);
 
     const mat = mesh.material;
     if (mat) {
@@ -588,10 +1235,10 @@ function addMeshToGeometryGroups(mesh, groups, transformMatrix) {
 }
 
 function getRoadMaterial(baseWidth, hasColors, colorHex, isDefaultMode) {
-    const key = `${baseWidth}|${hasColors ? 'vc' : colorHex}`;
-    let mat = RoadMaterialCache.get(key);
-    if (!mat) {
-        mat = new LineMaterial({
+    const key = `${baseWidth}|${hasColors ? 1 : 0}|${colorHex}|${isDefaultMode ? 1 : 0}`;
+    let material = RoadMaterialCache.get(key);
+    if (!material) {
+        material = new LineMaterial({
             color: hasColors ? 0xffffff : tempColor.set(colorHex).getHex(),
             linewidth: baseWidth * RoadGlobalState.widthMultiplier,
             vertexColors: hasColors,
@@ -606,25 +1253,16 @@ function getRoadMaterial(baseWidth, hasColors, colorHex, isDefaultMode) {
             polygonOffsetFactor: -4,
             polygonOffsetUnits: -4
         });
-        makeStereoProjectMaterial(mat);
-        RoadMaterialCache.set(key, mat);
+        material.userData = material.userData || {};
+        material.userData.baseWidth = baseWidth;
+        makeStereoProjectMaterial(material);
+        RoadMaterialCache.set(key, material);
     }
-    return mat;
+    return material;
 }
 
 function createFatLinesFromGroups(featureRoot, targetRoot, groups) {
-    if (!groups.size) {
-        return;
-    }
-
-    let hasSegments = false;
-    for (const group of groups.values()) {
-        if (group.positions.length > 0) {
-            hasSegments = true;
-            break;
-        }
-    }
-    if (!hasSegments) {
+    if (!groups || !groups.size) {
         return;
     }
 
@@ -638,11 +1276,11 @@ function createFatLinesFromGroups(featureRoot, targetRoot, groups) {
     featureRoot.userData = featureRoot.userData || {};
     const anchor = new THREE.Group();
     anchor.name = 'RoadTileAnchor';
-    anchor.matrixAutoUpdate = true;
-    anchor.matrix.copy(targetRoot.matrixWorld);
+    anchor.matrixAutoUpdate = false;
+    const parentInverse = _scratchRoadRootInverse.copy(RoadFatLineRoot.matrixWorld).invert();
+    anchor.matrix.copy(parentInverse).multiply(targetRoot.matrixWorld);
     anchor.matrix.decompose(anchor.position, anchor.quaternion, anchor.scale);
     anchor.updateMatrix();
-    anchor.updateMatrixWorld(true);
     anchor.frustumCulled = !RoadGlobalState.disableFrustumCulling;
     anchor.userData.isRoadAnchor = true;
     RoadFatLineRoot.add(anchor);
@@ -653,23 +1291,20 @@ function createFatLinesFromGroups(featureRoot, targetRoot, groups) {
     const isDefaultMode = RoadGlobalState.depthTest;
 
     for (const group of groups.values()) {
-        if (group.positions.length === 0) continue;
+        if (!group.positions.length) continue;
         const geometry = new LineSegmentsGeometry();
         geometry.setPositions(group.positions);
-
-        const hasColors = group.useColors && group.colors.length === group.positions.length;
-        if (hasColors) {
+        if (group.hasColors && group.colors.length === group.positions.length) {
             geometry.setColors(group.colors);
         }
 
-        const material = getRoadMaterial(group.baseWidth, hasColors, group.color, isDefaultMode);
+        const renderBase = group.baseWidth || 2;
+        const material = getRoadMaterial(renderBase, group.hasColors, group.color, isDefaultMode);
         const fatLine = new LineSegments2(geometry, material);
 
         fatLine.renderOrder = isDefaultMode ? 0 : 999;
         fatLine.userData.isFatLine = true;
-        fatLine.userData.baseWidth = group.baseWidth;
-        fatLine.userData.roadNature = group.nature;
-        fatLine.userData.stateVersion = -1;
+        fatLine.userData.baseWidth = renderBase;
         fatLine.frustumCulled = !RoadGlobalState.disableFrustumCulling;
 
         fatLine.position.set(0, 0, RoadGlobalState.altitudeOffset);
@@ -685,6 +1320,8 @@ function createFatLinesFromGroups(featureRoot, targetRoot, groups) {
             anchor,
             fatLines: featureRoot.userData.fatLines,
             sourceRoot: targetRoot,
+            needsSync: true,
+            featureRoot,
         });
         featureRoot.userData.roadTileKey = tileKey;
     }
@@ -758,7 +1395,8 @@ function getRoadBaseAltitude(props, ctx) {
 const roadsLayer = new itowns.FeatureGeometryLayer('BDTOPO_Roads', {
     source: roadsSource,
     zoom: { min: 12 },
-    mergeFeatures: false,
+    mergeFeatures: true,
+    batchId: (properties) => registerRoadFeature(properties),
     style: {
         stroke: {
             color: (props) => ROAD_COLOR[props.nature] || '#FF00FF',
@@ -844,21 +1482,28 @@ function processRoadTileRoot(featureRoot) {
 Promise.all(roadLayers.map((layer) => view.addLayer(layer))).then(() => {
     console.log('Roads layer added');
     createRoadsUI();
-    // Set initial width value in the UI to match the default in RoadGlobalState
-    document.getElementById('ui-width-val').innerText = RoadGlobalState.widthMultiplier.toFixed(1) + 'x';
-    document.getElementById('ui-width').value = RoadGlobalState.widthMultiplier;
+    applyFrustumCullingState();
+    triggerUpdate();
 });
 
 // ----------------------------------------------------------------------------
 // 5. ROBUST SYNC LOOP
 // ----------------------------------------------------------------------------
 
-// We increment this whenever the user touches the UI
-let globalStateVersion = 0;
 
 view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
+    const frameStart = performance.now();
     const renderer = view.mainLoop.gfxEngine.renderer;
-    renderer.getSize(RoadGlobalState.resolution);
+    renderer.getSize(_rendererSize);
+
+    if (_rendererSize.x !== _lastRendererWidth || _rendererSize.y !== _lastRendererHeight) {
+        _lastRendererWidth = _rendererSize.x;
+        _lastRendererHeight = _rendererSize.y;
+        RoadGlobalState.resolution.set(_rendererSize.x, _rendererSize.y);
+        syncMaterialResolutions();
+    }
+
+    // Only needed if some shaders still use it:
     StereoUniforms.uCameraPos.value.copy(view.camera.camera3D.position);
 
     const sphereCtl = SphereProjectionState.controller;
@@ -867,24 +1512,47 @@ view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
     const useCull = RoadGlobalState.cullBackfaces && !!active;
 
     if (active) {
-        StereoUniforms.uSphereCenter.value.copy(sphereCtl.mesh.position);
-        StereoUniforms.uSphereR.value = sphereCtl.mesh.scale.x;
+        const C = sphereCtl.mesh.position;
+        const rawR = sphereCtl.mesh.scale.x;
+        const R = Math.max(rawR, 1e-3); // clamp radius here, once
+
+        updateSphereBasisUniform();
+
+        StereoUniforms.uSphereCenter.value.copy(C);
+        StereoUniforms.uSphereR.value = R;
+        StereoUniforms.uTwoR.value = 2 * R;
+        StereoUniforms.uInv2R.value = 1.0 / (2 * R);
+
+        _tmpCamDir.copy(view.camera.camera3D.position).sub(C).normalize();
+        StereoUniforms.uCameraDirFromCenter.value.copy(_tmpCamDir);
     } else {
         StereoUniforms.uSphereCenter.value.set(0, 0, 0);
-        StereoUniforms.uSphereR.value = -1;
+        StereoUniforms.uSphereR.value = -1.0;
+        StereoUniforms.uTwoR.value = 0.0;
+        StereoUniforms.uInv2R.value = 0.0;
+        StereoUniforms.uCameraDirFromCenter.value.set(0, 0, 1);
+        StereoUniforms.uSphereBasis.value.identity();
     }
+
     StereoUniforms.uProjectionStrength.value = useProjection ? 1.0 : 0.0;
     StereoUniforms.uCullBackfaces.value = useCull ? 1.0 : 0.0;
 
     for (const entry of RoadTileAnchors.values()) {
         const source = entry.sourceRoot;
-        if (source && source.parent) {
-            source.updateWorldMatrix(true, false);
-            entry.anchor.matrix.copy(source.matrixWorld);
-            entry.anchor.matrix.decompose(entry.anchor.position, entry.anchor.quaternion, entry.anchor.scale);
-            entry.anchor.updateMatrixWorld(true);
-        } else if (source && !source.parent) {
+        const anchor = entry.anchor;
+        if (!source || !anchor) continue;
+        if (source.parent) {
+            if (source.matrixWorldNeedsUpdate || entry.needsSync) {
+                source.updateWorldMatrix(true, false);
+                anchor.matrix.copy(source.matrixWorld);
+                anchor.matrix.decompose(anchor.position, anchor.quaternion, anchor.scale);
+                anchor.updateMatrix();
+                anchor.updateMatrixWorld(true);
+                entry.needsSync = false;
+            }
+        } else {
             entry.sourceRoot = null;
+            entry.needsSync = false;
         }
     }
 
@@ -892,30 +1560,9 @@ view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
         if (!obj || !obj.material) continue;
         if (!obj.parent) {
             RoadFatLines.delete(obj);
-            continue;
-        }
-        const mat = obj.material;
-
-        mat.resolution.copy(RoadGlobalState.resolution);
-
-        if (obj.userData.stateVersion !== globalStateVersion) {
-            const base = obj.userData.baseWidth || 2;
-            mat.linewidth = base * RoadGlobalState.widthMultiplier;
-            mat.worldUnits = RoadGlobalState.useWorldUnits;
-
-            const isDefaultMode = RoadGlobalState.depthTest;
-            mat.depthTest = isDefaultMode;
-            mat.depthWrite = isDefaultMode;
-            mat.transparent = !isDefaultMode;
-            mat.polygonOffset = isDefaultMode;
-            obj.renderOrder = isDefaultMode ? 0 : 999;
-            obj.position.z = RoadGlobalState.altitudeOffset;
-            obj.updateMatrix();
-
-            mat.needsUpdate = true;
-            obj.userData.stateVersion = globalStateVersion;
         }
     }
+
 });
 
 // ----------------------------------------------------------------------------
@@ -938,7 +1585,7 @@ function applyFrustumCullingState() {
             }
         });
     }
-    RoadFatLineRoot.frustumCulled = frustumCulled;
+    RoadFatLineRoot.frustumCulled = false;
     RoadFatLineRoot.traverse((obj) => {
         if (!obj) return;
         if (obj.userData?.isFatLine || obj.userData?.isRoadFeature || obj.userData?.isRoadAnchor || obj.isLine || obj.isLineSegments || obj.isMesh || obj.isGroup) {
@@ -949,50 +1596,51 @@ function applyFrustumCullingState() {
 }
 
 function triggerUpdate() {
-    globalStateVersion++;
-    notifyRoadLayers();
+    applyGlobalStateToMaterials();
 }
 
 function createRoadsUI() {
+    ensureUIPanelStyles();
     const panel = document.createElement('div');
-    Object.assign(panel.style, {
-        position: 'absolute', right: '10px', top: '10px', zIndex: 100,
-        background: '#222222ee', border: '1px solid #444', borderRadius: '8px',
-        padding: '15px', color: '#fff', fontFamily: 'sans-serif', fontSize: '13px',
-        minWidth: '260px', display: 'flex', flexDirection: 'column', gap: '12px'
-    });
+    applyPanelStyle(panel, { right: '10px', top: '10px' });
+    panel.classList.add('itowns-ui-panel');
 
+    const checkboxStyle = '';
     panel.innerHTML = `
-        <div style="font-weight:bold; font-size:14px; border-bottom:1px solid #555; padding-bottom:5px;">
+        <div style="font-weight:bold; font-size:14px; border-bottom:1px solid #4b5066; padding-bottom:5px;">
             Road Settings
         </div>
         
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Visibility</span>
-            <input type="checkbox" id="ui-visible" checked>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-visible" ${RoadGlobalState.visible ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Visibility</span>
         </label>
 
-        <!-- Always On Top Toggle -->
-        <label style="display:flex; justify-content:space-between; align-items:center; background:#333; padding:5px; border-radius:4px;">
-            <span>Always On Top (Ghost)</span>
-            <input type="checkbox" id="ui-ontop">
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-ontop" ${RoadGlobalState.depthTest ? '' : 'checked'} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Always On Top (Ghost)</span>
         </label>
 
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Stereographic Projection</span>
-            <input type="checkbox" id="ui-projection" ${RoadGlobalState.useProjection ? 'checked' : ''}>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-projection" ${RoadGlobalState.useProjection ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Stereographic Projection</span>
         </label>
 
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Cull Backfaces (Sphere)</span>
-            <input type="checkbox" id="ui-cull" ${RoadGlobalState.cullBackfaces ? 'checked' : ''}>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-cull" ${RoadGlobalState.cullBackfaces ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Cull Backfaces (Sphere)</span>
         </label>
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Disable Frustum Culling</span>
-            <input type="checkbox" id="ui-nocull" ${RoadGlobalState.disableFrustumCulling ? 'checked' : ''}>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-nocull" ${RoadGlobalState.disableFrustumCulling ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Disable Frustum Culling</span>
+        </label>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-widths" ${RoadGlobalState.useIndividualWidths ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Per-Road Widths</span>
         </label>
 
-        <div style="display:flex; flex-direction:column; gap:5px;">
+
+        <div style="display:flex; flex-direction:column; gap:4px;">
             <div style="display:flex; justify-content:space-between;">
                 <span>Width Multiplier</span>
                 <span id="ui-width-val">${RoadGlobalState.widthMultiplier.toFixed(1)}x</span>
@@ -1000,7 +1648,7 @@ function createRoadsUI() {
             <input type="range" id="ui-width" min="0.1" max="5" step="0.1" value="${RoadGlobalState.widthMultiplier}">
         </div>
 
-        <div style="display:flex; flex-direction:column; gap:5px;">
+        <div style="display:flex; flex-direction:column; gap:4px;">
             <div style="display:flex; justify-content:space-between;">
                 <span>Elevation Offset</span>
                 <span id="ui-alt-val">${RoadGlobalState.altitudeOffset.toFixed(1)} m</span>
@@ -1008,68 +1656,135 @@ function createRoadsUI() {
             <input type="range" id="ui-alt" min="-50" max="50" step="0.5" value="${RoadGlobalState.altitudeOffset}">
         </div>
 
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>World Units (Meters)</span>
-            <input type="checkbox" id="ui-worldunits">
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-worldunits" ${RoadGlobalState.useWorldUnits ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">World Units (Meters)</span>
         </label>
         
-        <button id="ui-debug" style="margin-top:5px; padding:4px; background:#444; border:none; color:#ccc; cursor:pointer;">Debug Console</button>
+        <!--
+        <button id="ui-debug" style="${UI_BUTTON_STYLE}width:100%;text-align:center;margin-top:6px;">Debug Console</button>
+        -->
     `;
     document.body.appendChild(panel);
 
+    const visibleInput = document.getElementById('ui-visible');
+    const ghostInput = document.getElementById('ui-ontop');
+    const projectionInput = document.getElementById('ui-projection');
+    const cullInput = document.getElementById('ui-cull');
+    const noCullInput = document.getElementById('ui-nocull');
+    const widthsInput = document.getElementById('ui-widths');
+    const widthSlider = document.getElementById('ui-width');
+    const widthLabel = document.getElementById('ui-width-val');
+    const altSlider = document.getElementById('ui-alt');
+    const altLabel = document.getElementById('ui-alt-val');
+    const worldUnitsInput = document.getElementById('ui-worldunits');
+
+    visibleInput.checked = RoadGlobalState.visible;
+    ghostInput.checked = !RoadGlobalState.depthTest;
+    projectionInput.checked = RoadGlobalState.useProjection;
+    cullInput.checked = RoadGlobalState.cullBackfaces;
+    noCullInput.checked = RoadGlobalState.disableFrustumCulling;
+    widthsInput.checked = RoadGlobalState.useIndividualWidths;
+    widthSlider.value = RoadGlobalState.widthMultiplier;
+    widthLabel.innerText = RoadGlobalState.widthMultiplier.toFixed(1) + 'x';
+    altSlider.value = RoadGlobalState.altitudeOffset;
+    altLabel.innerText = RoadGlobalState.altitudeOffset.toFixed(1) + ' m';
+    worldUnitsInput.checked = RoadGlobalState.useWorldUnits;
+
+    for (const layer of roadLayers) {
+        layer.object3d.visible = RoadGlobalState.visible;
+    }
+
     // Events
-    document.getElementById('ui-visible').addEventListener('change', (e) => {
+    visibleInput.addEventListener('change', (e) => {
+        RoadGlobalState.visible = e.target.checked;
         for (const layer of roadLayers) {
-            layer.object3d.visible = e.target.checked;
+            layer.object3d.visible = RoadGlobalState.visible;
         }
+        RoadUIStorage.save({ visible: RoadGlobalState.visible });
         notifyRoadLayers();
     });
 
-    document.getElementById('ui-ontop').addEventListener('change', (e) => {
-        // Logic: Checked = Always On Top -> depthTest = false (Mode Switch)
+    ghostInput.addEventListener('change', (e) => {
         RoadGlobalState.depthTest = !e.target.checked;
+        RoadUIStorage.save({ depthTest: RoadGlobalState.depthTest });
         triggerUpdate();
     });
 
-    document.getElementById('ui-projection').addEventListener('change', (e) => {
+    projectionInput.addEventListener('change', (e) => {
         RoadGlobalState.useProjection = e.target.checked;
+        RoadUIStorage.save({ useProjection: RoadGlobalState.useProjection });
         triggerUpdate();
     });
 
-    document.getElementById('ui-cull').addEventListener('change', (e) => {
+    cullInput.addEventListener('change', (e) => {
         RoadGlobalState.cullBackfaces = e.target.checked;
+        RoadUIStorage.save({ cullBackfaces: RoadGlobalState.cullBackfaces });
         notifyRoadLayers();
     });
-    document.getElementById('ui-nocull').addEventListener('change', (e) => {
+
+    noCullInput.addEventListener('change', (e) => {
         RoadGlobalState.disableFrustumCulling = e.target.checked;
+        RoadUIStorage.save({ disableFrustumCulling: RoadGlobalState.disableFrustumCulling });
         applyFrustumCullingState();
     });
 
-    document.getElementById('ui-width').addEventListener('input', (e) => {
+    widthsInput.addEventListener('change', (e) => {
+        RoadGlobalState.useIndividualWidths = e.target.checked;
+        RoadUIStorage.save({ useIndividualWidths: RoadGlobalState.useIndividualWidths });
+        rebuildAllRoadTiles();
+        applyGlobalStateToMaterials();
+    });
+
+    widthSlider.addEventListener('input', (e) => {
         const v = parseFloat(e.target.value);
-        document.getElementById('ui-width-val').innerText = v.toFixed(1) + 'x';
+        widthLabel.innerText = v.toFixed(1) + 'x';
         RoadGlobalState.widthMultiplier = v;
+        RoadUIStorage.save({ widthMultiplier: RoadGlobalState.widthMultiplier });
         triggerUpdate();
     });
 
-    document.getElementById('ui-alt').addEventListener('input', (e) => {
+    altSlider.addEventListener('input', (e) => {
         const v = parseFloat(e.target.value);
-        document.getElementById('ui-alt-val').innerText = v.toFixed(1) + ' m';
+        altLabel.innerText = v.toFixed(1) + ' m';
         RoadGlobalState.altitudeOffset = v;
-        triggerUpdate();
+        RoadUIStorage.save({ altitudeOffset: RoadGlobalState.altitudeOffset });
+        rebuildAllRoadTiles();
     });
 
-    document.getElementById('ui-worldunits').addEventListener('change', (e) => {
+    worldUnitsInput.addEventListener('change', (e) => {
         RoadGlobalState.useWorldUnits = e.target.checked;
+        RoadUIStorage.save({ useWorldUnits: RoadGlobalState.useWorldUnits });
         triggerUpdate();
     });
 
-    document.getElementById('ui-debug').addEventListener('click', () => {
-        let count = 0;
-        for (const layer of roadLayers) {
-            layer.object3d.traverse(o => { if (o.userData?.isFatLine) count++; });
-        }
-        RoadFatLineRoot.traverse(o => { if (o.userData?.isFatLine) count++; });
-        console.log(`Visible Fat Lines: ${count}`);
-    });
+    // document.getElementById('ui-debug').addEventListener('click', () => {
+    //     let count = 0;
+    //     for (const layer of roadLayers) {
+    //         layer.object3d.traverse(o => { if (o.userData?.isFatLine) count++; });
+    //     }
+    //     RoadFatLineRoot.traverse(o => { if (o.userData?.isFatLine) count++; });
+    //     console.log(`Visible Fat Lines: ${count}`);
+    // });
+}
+function updateSphereBasisUniform() {
+    const sphereCtl = SphereProjectionState.controller;
+    const basis = StereoUniforms.uSphereBasis.value;
+    if (!sphereCtl || !sphereCtl.hasGround()) {
+        basis.identity();
+        return;
+    }
+    _basisUp.copy(sphereCtl.mesh.position).normalize();
+    if (Math.abs(_basisUp.y) < 0.99) {
+        _basisRef.set(0, 1, 0);
+    } else {
+        _basisRef.set(1, 0, 0);
+    }
+    _basisX.crossVectors(_basisRef, _basisUp).normalize();
+    _basisZ.crossVectors(_basisUp, _basisX).normalize();
+    basis.set(
+        _basisX.x, _basisUp.x, _basisZ.x,
+        _basisX.y, _basisUp.y, _basisZ.y,
+        _basisX.z, _basisUp.z, _basisZ.z
+    );
 }
