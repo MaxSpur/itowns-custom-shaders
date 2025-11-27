@@ -659,13 +659,13 @@ function addClampDebugCylinder(view) {
     const geometry = new THREE.CylinderGeometry(0, 1, 1, 24, 1, true);
     // const geometry = new THREE.CylinderGeometry(1000, 0, 8000, 24, 1, true);
     const material = new THREE.MeshBasicMaterial({
-        color: 0x00ff00,
+        color: 0xff0000,
         transparent: true,
         opacity: 0.8,
-        side: THREE.DoubleSide,
+        side: THREE.BackSide,
         depthWrite: false,
         depthTest: false,
-        wireframe: true,
+        // wireframe: true,
     });
 
     const mesh = new THREE.Mesh(geometry, material);
@@ -1132,6 +1132,8 @@ bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
     return false;
   }
 
+   // ---------------- SPHERE MODE ----------------
+ if (uProjectionSurface < 0.5) {
   float R = uSphereR;
   if (R <= 0.0) {
     return false;
@@ -1155,8 +1157,6 @@ bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
   
   vec3 n = projectedP - C; // outward normal; magnitude doesn't matter for sign
 
-  //   vec3 camDirFromCenter = normalize(uCameraPos - C);
-
   // Pre-normalized on CPU:
   vec3 camDirFromCenter = uCameraDirFromCenter;
 
@@ -1164,6 +1164,51 @@ bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
   // outward normal faces the camera → outside hemisphere → HIDE it
   // (so we see the inside).
   return dot(n, camDirFromCenter) > 0.0;
+}
+
+  // ---------------- CONE MODE ----------------
+  // Keep the same spirit:
+  //  - never cull anything inside the view radius
+  //  - for projected points, use the cone top center as reference and
+  //    cull the side facing the camera.
+
+  // 1) Inside view radius on ground? Never cull  (we do not project there).
+  vec3 axis = normalize(uConeAxis);
+  vec3 vGC = originalWp - uGroundCenter;
+  float hAlong = dot(vGC, axis);
+  vec3 radialGC = vGC - hAlong * axis; // in local "ground" plane
+  float r2Ground = dot(radialGC, radialGC);
+  float vr2 = uViewRadius * uViewRadius;
+
+  if (r2Ground <= vr2 + 1e-6) {
+    return false;
+  }
+
+  // 2) Estimate cone surface normal at the *projected* point
+  //    using the gradient of r - k z = 0:
+  //      n ∝ radialDir - k * axis
+  vec3 apex = uConeApex;
+  float kCone = uConeSlope;
+
+  vec3 ap = projectedP - apex;
+  float zC  = dot(ap, axis);
+  vec3 radialC = ap - zC * axis;
+  float rLen2 = dot(radialC, radialC);
+  if (rLen2 < 1e-8) {
+    // very close to the axis → normal ill-defined, don't cull
+    return false;
+  }
+
+  float rLen = sqrt(rLen2);
+  vec3 radialDir = radialC / rLen;
+  vec3 nSurf = normalize(radialDir - kCone * axis);  // outward normal
+
+  // 3) Compare normal to camera direction from the point
+  vec3 camDir = normalize(uCameraPos - projectedP);
+
+  // As for the sphere: if the outward normal faces the camera,
+  // we hide that fragment/vertex to only see the "inside" of the cone.
+  return dot(nSurf, camDir) > 0.0;
 }
   `;
 
