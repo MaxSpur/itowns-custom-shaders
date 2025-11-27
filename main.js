@@ -171,12 +171,52 @@ function applyPersistedRoadGlobalState() {
 
 function getPersistedSphereSettings() {
     const saved = RoadUIStorage.get() || {};
-    const defaults = { radius: 1000, offset01: 1.0, opacity: 0.54 };
+    const defaults = { radius: 1000, offset01: 1.0, opacity: 0.54, coneHeightMul: 1.0 };
     return {
         radius: Number.isFinite(saved.sphereRadius) ? saved.sphereRadius : defaults.radius,
         offset01: Number.isFinite(saved.sphereOffset) ? saved.sphereOffset : defaults.offset01,
         opacity: Number.isFinite(saved.sphereOpacity) ? saved.sphereOpacity : defaults.opacity,
+        coneHeightMul: Number.isFinite(saved.sphereConeHeightMul) ? saved.sphereConeHeightMul : defaults.coneHeightMul,
     };
+}
+
+// --- Sphere/cone UI mapping helpers ----------------------------------------
+const VIEW_RADIUS_MIN = 100;
+const VIEW_RADIUS_MAX = 20000;
+
+// --- Cone height multiplier mapping (for cone mode) ------------------------
+const CONE_HEIGHT_MIN = 0.1;
+const CONE_HEIGHT_MAX = 10.0;
+
+function coneHeightMulFromSlider01(u) {
+    const clamped = THREE.MathUtils.clamp(+u || 0, 0, 1);
+    const k = CONE_HEIGHT_MAX / CONE_HEIGHT_MIN;
+    return CONE_HEIGHT_MIN * Math.pow(k, clamped);
+}
+
+function slider01FromConeHeightMul(mul) {
+    const clamped = THREE.MathUtils.clamp(
+        +mul || 1.0,
+        CONE_HEIGHT_MIN,
+        CONE_HEIGHT_MAX,
+    );
+    const k = CONE_HEIGHT_MAX / CONE_HEIGHT_MIN;
+    return Math.log(clamped / CONE_HEIGHT_MIN) / Math.log(k);
+}
+
+// Slider u in [0,1]  →  radius in meters (log / exponential mapping)
+function radiusFromSlider01(u) {
+    const clamped = THREE.MathUtils.clamp(+u || 0, 0, 1);
+    const k = VIEW_RADIUS_MAX / VIEW_RADIUS_MIN;
+    return VIEW_RADIUS_MIN * Math.pow(k, clamped);
+}
+
+// Radius in meters  →  slider u in [0,1]
+function slider01FromRadius(rMeters) {
+    const clamped = THREE.MathUtils.clamp(+rMeters || VIEW_RADIUS_MIN,
+        VIEW_RADIUS_MIN, VIEW_RADIUS_MAX);
+    const k = VIEW_RADIUS_MAX / VIEW_RADIUS_MIN;
+    return Math.log(clamped / VIEW_RADIUS_MIN) / Math.log(k);
 }
 
 const PANEL_BASE_STYLE = {
@@ -315,12 +355,30 @@ const StereoUniforms = {
 
 const RoadFatLines = new Set();
 
+// Cone visualization mode:
+//  - true  → truncated from sphere zenith down to GROUND (bottom radius = viewRadius)
+//  - false → truncated from sphere zenith down to SPHERE BOTTOM (your current behaviour)
+const CONE_TRUNCATE_AT_GROUND = true;
+
 function makeSphereController(view, {
     radius = 1000,
     offset01 = 1.0,
     opacity = 0.5,
     color = 0xff0000,
+    coneHeightMul = 1.0,
 } = {}) {
+    const DEBUG_SPHERE_CTL = false;
+    const logSphere = (...args) => {
+        if (!DEBUG_SPHERE_CTL) return;
+        console.log('[SphereCtl]', ...args);
+    };
+
+
+    // external clamp/diagnostic cylinder (the green one from addClampDebugCylinder)
+    let externalClampCylinder = null;
+
+    logSphere('init controller', { radius, offset01, opacity, color });
+
     // --- Sphere mesh ---------------------------------------------------------
     const sphereGeom = new THREE.SphereGeometry(1, 32, 16);
     const sphereMat = new THREE.MeshBasicMaterial({
@@ -335,21 +393,6 @@ function makeSphereController(view, {
     view.scene.add(sphereMesh);
 
     // --- Cone mesh (created as cylinder; we control radii) -------------------
-    const coneMat = new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-        wireframe: true,
-    });
-    const coneMesh = new THREE.Mesh(
-        new THREE.CylinderGeometry(1, 0, 1, 32, 1, true),
-        coneMat,
-    );
-    coneMesh.renderOrder = 19;
-    coneMesh.visible = false; // start in "sphere" mode
-    view.scene.add(coneMesh);
 
     let displayMode = 'sphere'; // 'sphere' | 'cone'
 
@@ -368,20 +411,32 @@ function makeSphereController(view, {
         intersection01: offset01,      // controls intersection angle
 
         sphereRadius: radius,
+        coneHeightMul: 1.0,
     };
 
     function updateTransform() {
-        if (!state.hasGround) return;
+        if (!state.hasGround) {
+            logSphere('updateTransform skipped, no ground yet');
+            return;
+        }
+        logSphere('updateTransform begin', {
+            viewRadius: state.viewRadius,
+            intersection01: state.intersection01,
+        });
 
         const normal = state.groundECEF.clone().normalize();
         const G = state.groundECEF; // ground intersection center
 
-        // Clamp intersection parameter away from degenerate extremes
-        const tRaw = state.intersection01;
-        const t = Math.min(0.999, Math.max(0.001, tRaw));
+        // Slider value u in [0,1]
+        const u = THREE.MathUtils.clamp(state.intersection01, 0, 1);
 
-        // View radius must stay positive
-        const rView = Math.max(1, state.viewRadius);
+        // Non-linear mapping for finer control near 0
+        const epsT = 1e-4;
+        const tUnit = u * u; // [0,1]
+        const t = epsT + (1.0 - 2.0 * epsT) * tUnit; // t in (0,1)
+
+        // View radius (meters)
+        const rView = Math.max(1e-3, state.viewRadius);
 
         // f(t) = sqrt(2t - t^2) → relation between sphere radius and intersection radius
         const f = Math.sqrt(Math.max(1e-6, 2.0 * t - t * t));
@@ -403,104 +458,165 @@ function makeSphereController(view, {
         sphereMesh.lookAt(new THREE.Vector3(0, 0, 0));
         sphereMesh.rotateX(Math.PI / 2);
 
-        // --- Cone placement --------------------------------------------------
-        //
-        // We want:
-        //  - base circle centered at Z (sphere zenith), radius = R
-        //  - apex below ground on same axis
-        //  - intersection with ground plane to be a circle of radius rView
-        //
-        // In 1D along the axis:
-        //   ground→zenith distance: h_z = h + R
-        //   apex depth below ground: h_c
-        //
-        // For a cone with apex at A (depth h_c) and base at Z (distance h_z above ground),
-        // radius scales linearly: rView = (h_c / (h_c + h_z)) * R
-        // → h_c = rView * h_z / (R - rView)
-        //
-        // As t → 1, R → rView and h_c → ∞, i.e. cylinder; we special-case that.
+        // --- Shared cone/infinite-cone quantities ----------------------------
+        // Distance from sphere top to ground: P = R(2 - t)
+        const P = R * (2.0 - t);
 
-        const h_z = h + R;                // ground → zenith
-        const denom = R - rView;
-        let topRadius = R;
-        let bottomRadius = 0;
-        let A;        // apex position
-        let height;   // total cone height (apex → zenith)
+        // Apex depth below ground so that the ground intersection circle
+        // has radius rView: d^2 = h_c * R * (1 - t)  =>  h_c = d^2 / (R(1 - t))
+        const eps = 1e-6;
+        const denom = Math.max(eps, R * (1.0 - t));
+        const hc = (rView * rView) / denom;  // distance ground → apex
 
-        if (Math.abs(denom) < 1e-3) {
-            // Intersection ≈ 1: treat as vertical cylinder of radius rView
-            height = 2 * rView;
-            A = G.clone().addScaledVector(normal, -height / 2);
-            topRadius = rView;
-            bottomRadius = rView;
-        } else {
-            const h_c = (rView * h_z) / denom; // apex depth below ground
-            A = G.clone().addScaledVector(normal, -h_c);
-            height = h_c + h_z;
-            topRadius = R;  // base at zenith
-            bottomRadius = 0; // apex
-        }
+        // Total distance from zenith Z down to apex
+        const totalHeight = P + hc;
 
-        const axis = Z.clone().sub(A);       // apex → zenith
-        const axisDir = axis.clone().normalize();
-        const mid = A.clone().addScaledVector(axis, 0.5);
+        // Radius at zenith in the infinite cone
+        const minRadius = 1e-3;
+        let rTopInfinite = rView * (totalHeight / hc);
+        rTopInfinite = Math.max(minRadius, rTopInfinite);
 
-        // Rebuild cone geometry with proper radii and height
-        coneMesh.geometry.dispose();
-        coneMesh.geometry = new THREE.CylinderGeometry(
-            topRadius,       // radius at zenith (top, +Y)
-            bottomRadius,    // radius at apex (bottom, -Y)
-            height, // height
-            32, // radial segments
-            1, // height segments
-            false
-        );
+        // --- Choose cone truncation mode -------------------------------------
+        let cylTopRadius;
+        let cylBottomRadius;
+        let cylHeight;
+        let cylCenter;
+        let cylAxisDir;
 
         const up = new THREE.Vector3(0, 1, 0);
-        const quat = new THREE.Quaternion().setFromUnitVectors(up, axisDir);
-        coneMesh.position.copy(mid);
-        coneMesh.quaternion.copy(quat);
+
+        if (CONE_TRUNCATE_AT_GROUND) {
+            // Cone defined by apex below ground and radius rView at ground.
+            // r(h) = rView * (1 + h / hc), where h is height above ground.
+            const k = state.coneHeightMul || 1.0;
+
+            const hTopDefault = P;                      // sphere zenith height
+            const hTop = THREE.MathUtils.clamp(
+                k * hTopDefault,
+                CONE_HEIGHT_MIN * hTopDefault,
+                CONE_HEIGHT_MAX * hTopDefault,
+            );
+
+            const rTop = rView * (1.0 + hTop / hc);     // radius at new top height
+
+            cylBottomRadius = Math.max(minRadius, rView);
+            cylTopRadius = Math.max(minRadius, rTop);
+            cylHeight = hTop;
+            cylCenter = G.clone().addScaledVector(normal, 0.5 * hTop);
+            cylAxisDir = normal;
+        } else {
+            // Original "sphere-bottom" truncation; we leave this mode unchanged.
+            const B = C.clone().addScaledVector(normal, -R);
+
+            const rBottomRaw = rTopInfinite * (1.0 - (2.0 * R / totalHeight));
+
+            cylTopRadius = rTopInfinite;
+            cylBottomRadius = Math.max(minRadius, rBottomRaw);
+            cylHeight = 2.0 * R;
+            cylCenter = C.clone();
+            cylAxisDir = normal;
+        }
+
+        const q = new THREE.Quaternion().setFromUnitVectors(up, cylAxisDir);
+
+        // --- External green cone / truncated cone ----------------------------
+        if (externalClampCylinder) {
+            if (externalClampCylinder.geometry) {
+                externalClampCylinder.geometry.dispose();
+            }
+            externalClampCylinder.geometry = new THREE.CylinderGeometry(
+                cylTopRadius,
+                cylBottomRadius,
+                cylHeight,
+                48,
+                1,
+                true // openEnded
+            );
+
+            externalClampCylinder.quaternion.copy(q);
+            externalClampCylinder.position.copy(cylCenter);
+            externalClampCylinder.visible = (displayMode === 'cone');
+            externalClampCylinder.updateMatrixWorld(true);
+        }
 
         view.notifyChange(true);
     }
 
     return {
         mesh: sphereMesh,
-        coneMesh,
+        // coneMesh,
         hasGround() {
             return state.hasGround;
         },
         setGroundFromWorld(vec3) {
             state.groundECEF.copy(vec3);
             state.hasGround = true;
+            logSphere('setGroundFromWorld', vec3.toArray());
             updateTransform();
         },
         // "Radius" slider → view radius (intersection radius on ground)
         setRadius(meters) {
             state.viewRadius = Math.max(1, +meters);
+            logSphere('setRadius', state.viewRadius);
             updateTransform();
         },
         // "Offset" slider → intersection parameter (angle)
         setOffset01(t) {
             state.intersection01 = Math.min(1, Math.max(0, +t));
+            logSphere('setOffset01', state.intersection01);
             updateTransform();
         },
         setOpacity(a) {
             const clamped = Math.min(1, Math.max(0, +a));
             sphereMat.opacity = clamped;
-            coneMat.opacity = clamped;
+            // coneMat.opacity = clamped;
+            // change the opactity of the external cylinder too
+            if (externalClampCylinder && externalClampCylinder.material) {
+                externalClampCylinder.material.opacity = clamped;
+            }
+            logSphere('setOpacity', clamped);
             view.notifyChange(true);
         },
         setColor(hex) {
             sphereMat.color.set(hex);
-            coneMat.color.set(hex);
+            // coneMat.color.set(hex);
+            logSphere('setColor', hex);
             view.notifyChange(true);
         },
+        setConeHeightMul(mul) {
+            const k = THREE.MathUtils.clamp(+mul || 1.0, CONE_HEIGHT_MIN, CONE_HEIGHT_MAX);
+            state.coneHeightMul = k;
+            logSphere('setConeHeightMul', k);
+            updateTransform();
+        },
+        // setDisplayMode(mode) {
+        //     displayMode = mode === 'cone' ? 'cone' : 'sphere';
+        //     sphereMesh.visible = displayMode === 'sphere';
+        //     coneMesh.visible = displayMode === 'cone';
+        //     logSphere('setDisplayMode', displayMode);
+        //     view.notifyChange(true);
+        // },
         setDisplayMode(mode) {
             displayMode = mode === 'cone' ? 'cone' : 'sphere';
-            sphereMesh.visible = displayMode === 'sphere';
-            coneMesh.visible = displayMode === 'cone';
+            const showCone = (displayMode === 'cone');
+            sphereMesh.visible = !showCone;
+            // We stop using the internal red cone for now.
+            // coneMesh.visible = false;
+            if (externalClampCylinder) {
+                externalClampCylinder.visible = showCone;
+            }
+            logSphere('setDisplayMode', displayMode);
             view.notifyChange(true);
+        },
+        // NEW: allow attaching the green debug cylinder from outside
+        attachClampCylinder(mesh) {
+            externalClampCylinder = mesh;
+            if (externalClampCylinder) {
+                externalClampCylinder.frustumCulled = false;
+                externalClampCylinder.visible = (displayMode === 'cone');
+            }
+            // Re-apply transform so it jumps to the current ground point
+            updateTransform();
         },
         getDisplayMode() {
             return displayMode;
@@ -515,7 +631,42 @@ function initSphereAtLookAt(view, sphereCtl) {
     sphereCtl.setGroundFromWorld(new THREE.Vector3(groundECEF.x, groundECEF.y, groundECEF.z));
 }
 
-function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.0, opacity: 0.5 }) {
+function addClampDebugCylinder(view) {
+
+    const geometry = new THREE.CylinderGeometry(0, 1, 1, 24, 1, true);
+    // const geometry = new THREE.CylinderGeometry(1000, 0, 8000, 24, 1, true);
+    const material = new THREE.MeshBasicMaterial({
+        color: 0x00ff00,
+        transparent: true,
+        opacity: 0.8,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        depthTest: false,
+        wireframe: true,
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = 'ClampDebugCone';
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 40;
+
+    view.scene.add(mesh);
+    view.notifyChange(true);
+
+    if (typeof window !== 'undefined') {
+        window.DebugClampCylinder = mesh;
+    }
+
+    // Attach to sphere controller so it follows all updates
+    if (SphereProjectionState.controller &&
+        typeof SphereProjectionState.controller.attachClampCylinder === 'function') {
+        SphereProjectionState.controller.attachClampCylinder(mesh);
+    }
+
+    console.log('[Debug] Clamp cone added');
+}
+
+function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.0, opacity: 0.5, coneHeightMul: 1.0 }) {
     ensureUIPanelStyles();
     const panel = document.createElement('div');
     applyPanelStyle(panel, { left: '10px', top: '10px', minWidth: '280px' });
@@ -524,12 +675,19 @@ function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.
         radius: Number.isFinite(init.radius) ? init.radius : 1000,
         offset01: Number.isFinite(init.offset01) ? init.offset01 : 1.0,
         opacity: Number.isFinite(init.opacity) ? init.opacity : 0.5,
+        coneHeightMul: Number.isFinite(init.coneHeightMul) ? init.coneHeightMul : 1.0,
     };
+
+    const radiusSlider01 = slider01FromRadius(state.radius);
+    const offsetSlider01 = THREE.MathUtils.clamp(state.offset01, 0, 1);
+
+    const coneHeightSlider01 = slider01FromConeHeightMul(state.coneHeightMul);
+
     panel.innerHTML = `
         <div style="font-weight:bold; font-size:14px; border-bottom:1px solid #555; padding-bottom:5px;">
-            Projection Sphere
+            Projection Controls
         </div>
-                <div style="display:flex; gap:8px; margin:6px 0 4px 0;">
+        <div style="display:flex; gap:8px; margin:6px 0 4px 0;">
             <button id="sp-mode-sphere" style="${UI_BUTTON_STYLE}flex:1;" class="is-active">Sphere</button>
             <button id="sp-mode-cone" style="${UI_BUTTON_STYLE}flex:1;">Cone</button>
         </div>
@@ -538,14 +696,23 @@ function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.
                 <span>View Radius (m)</span>
                 <span id="sp-rv">${state.radius.toFixed(0)} m</span>
             </div>
-            <input id="sp-r" type="range" min="10" max="20000" step="10" value="${state.radius}">
+            <!-- radius slider is now 0..1, mapped logarithmically to meters -->
+            <input id="sp-r" type="range" min="0" max="1" step="0.001" value="${radiusSlider01}">
         </div>
         <div style="display:flex; flex-direction:column; gap:5px;">
             <div style="display:flex; justify-content:space-between;">
                 <span>Intersection</span>
-                <span id="sp-ov">${state.offset01.toFixed(2)}</span>
+                <span id="sp-ov">${state.offset01.toFixed(3)}</span>
             </div>
-            <input id="sp-o" type="range" min="0" max="1" step="0.01" value="${state.offset01}">
+            <!-- intersection slider also 0..1 with finer steps -->
+            <input id="sp-o" type="range" min="0" max="1" step="0.001" value="${offsetSlider01}">
+        </div>
+                <div id="sp-cone-height-wrapper" style="display:none; margin-top:6px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Cone height</span>
+                <span id="sp-chv">${state.coneHeightMul.toFixed(2)}×</span>
+            </div>
+            <input id="sp-ch" type="range" min="0" max="1" step="0.001" value="${coneHeightSlider01}">
         </div>
         <div style="display:flex; flex-direction:column; gap:5px;">
             <div style="display:flex; justify-content:space-between;">
@@ -573,13 +740,19 @@ function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.
     const btnModeSphere = panel.querySelector('#sp-mode-sphere');
     const btnModeCone = panel.querySelector('#sp-mode-cone');
 
+    const coneHeightWrapper = panel.querySelector('#sp-cone-height-wrapper');
+    const coneHeightInput = panel.querySelector('#sp-ch');
+    const coneHeightLabel = panel.querySelector('#sp-chv');
+
     const persistSphereState = () => {
         RoadUIStorage.save({
             sphereRadius: state.radius,
             sphereOffset: state.offset01,
             sphereOpacity: state.opacity,
+            coneHeightMul: state.coneHeightMul, // NEW
         });
     };
+
 
     sphereCtl.setRadius(state.radius);
     sphereCtl.setOffset01(state.offset01);
@@ -589,6 +762,7 @@ function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.
         const mode = sphereCtl.getDisplayMode ? sphereCtl.getDisplayMode() : 'sphere';
         btnModeSphere.classList.toggle('is-active', mode === 'sphere');
         btnModeCone.classList.toggle('is-active', mode === 'cone');
+        coneHeightWrapper.style.display = (mode === 'cone') ? 'block' : 'none';
     };
 
     btnModeSphere.addEventListener('click', () => {
@@ -609,17 +783,38 @@ function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.
     updateModeButtons();
 
     radiusInput.addEventListener('input', (e) => {
-        state.radius = parseFloat(e.target.value);
+        const u = parseFloat(e.target.value);        // 0..1
+        state.radius = radiusFromSlider01(u);        // meters
         radiusLabel.textContent = `${state.radius.toFixed(0)} m`;
         sphereCtl.setRadius(state.radius);
         persistSphereState();
     });
+
     offsetInput.addEventListener('input', (e) => {
-        state.offset01 = parseFloat(e.target.value);
-        offsetLabel.textContent = state.offset01.toFixed(2);
+        state.offset01 = parseFloat(e.target.value); // 0..1 slider value
+        offsetLabel.textContent = state.offset01.toFixed(3);
         sphereCtl.setOffset01(state.offset01);
         persistSphereState();
     });
+
+    coneHeightInput.addEventListener('input', (e) => {
+        const uHeight = parseFloat(e.target.value);
+        state.coneHeightMul = coneHeightMulFromSlider01(uHeight);
+        coneHeightLabel.textContent = `${state.coneHeightMul.toFixed(2)}×`;
+        sphereCtl.setConeHeightMul(state.coneHeightMul);
+        persistSphereState();
+    });
+
+    // Double-click to reset multiplier back to 1×
+    coneHeightInput.addEventListener('dblclick', () => {
+        state.coneHeightMul = 1.0;
+        const uReset = slider01FromConeHeightMul(state.coneHeightMul);
+        coneHeightInput.value = uReset.toString();
+        coneHeightLabel.textContent = `${state.coneHeightMul.toFixed(2)}×`;
+        sphereCtl.setConeHeightMul(state.coneHeightMul);
+        persistSphereState();
+    });
+
     opacityInput.addEventListener('input', (e) => {
         state.opacity = parseFloat(e.target.value);
         opacityLabel.textContent = state.opacity.toFixed(2);
@@ -677,12 +872,14 @@ const sphereCtl = makeSphereController(view, {
     offset01: 1.0,
     opacity: 0.54,
     color: 0xff0000,
+    coneHeightMul: 1.0,
 });
 SphereProjectionState.controller = sphereCtl;
 
 view.addEventListener(itowns.GLOBE_VIEW_EVENTS.GLOBE_INITIALIZED, () => {
     initSphereAtLookAt(view, sphereCtl);
     createSphereWidget(view, sphereCtl, getPersistedSphereSettings());
+    addClampDebugCylinder(view);
 });
 
 function makeStereoProjectMaterial(mat) {
@@ -1495,6 +1692,8 @@ view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
     const frameStart = performance.now();
     const renderer = view.mainLoop.gfxEngine.renderer;
     renderer.getSize(_rendererSize);
+    // attempt at retina support
+    renderer.setPixelRatio(window.devicePixelRatio);
 
     if (_rendererSize.x !== _lastRendererWidth || _rendererSize.y !== _lastRendererHeight) {
         _lastRendererWidth = _rendererSize.x;
