@@ -4,7 +4,7 @@
 Address follow-up cleanup/performance items found during modularization.
 
 ## CURRENT_SUBTASK
-Prevent unbounded `requestAnimationFrame` retries for detached road roots in tile lifecycle queueing.
+Dispose fat-line geometries on cleanup/rebuild paths to prevent GPU memory accumulation.
 
 ## SESSION INSIGHTS
 - `main.js` is now a thin orchestrator that wires modules.
@@ -59,6 +59,7 @@ Prevent unbounded `requestAnimationFrame` retries for detached road roots in til
 - `package.json` now uses `"type": "module"` to match the project’s ESM source/import style.
 - `src/roads/frameSync.js` now updates renderer pixel ratio only when `window.devicePixelRatio` changes (instead of every frame), reducing unnecessary per-frame renderer state calls.
 - `src/roads/pipeline/tileLifecycle.js` queue retries are now bounded (`ATTACH_RETRY_MAX_ATTEMPTS` / `ATTACH_RETRY_MAX_WAIT_MS`) so detached roots cannot spin forever in RAF loops.
+- Fat-line `LineSegmentsGeometry` objects are now explicitly disposed in cleanup paths (`cleanupAnchorEntry` and `resetProcessedFlag`) before removing references, reducing long-session GPU memory growth during tile rebuild/reload.
 
 ## Problems / TO DO
 - Consolidate duplicated road/shader code across many `main-*.js` files into shared modules (source setup, fat-line conversion, shader patching, UI state).

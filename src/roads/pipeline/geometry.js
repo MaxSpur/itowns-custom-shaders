@@ -289,6 +289,10 @@ export function createRoadGeometryProcessor({
             delete node.userData.hasProcessedFatLine;
             if (node.userData.isFatLine && node.parent) {
                 node.parent.remove(node);
+                const geometry = node.geometry;
+                if (geometry && typeof geometry.dispose === 'function') {
+                    geometry.dispose();
+                }
                 roadFatLines.delete(node);
             }
         });

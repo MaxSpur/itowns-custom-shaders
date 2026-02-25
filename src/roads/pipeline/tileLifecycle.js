@@ -29,6 +29,10 @@ export function createRoadTileLifecycle({
             for (const line of fatLines) {
                 if (!line) continue;
                 if (line.parent) line.parent.remove(line);
+                const geometry = line.geometry;
+                if (geometry && typeof geometry.dispose === 'function') {
+                    geometry.dispose();
+                }
                 roadFatLines.delete(line);
             }
         }
