@@ -61,7 +61,10 @@ Repository setting required once:
 - [state.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/state.js): roads config/registry + persisted render state.
 - [index.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/projection/index.js): projection controller, uniforms, shader patch logic.
 - [renderer.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/renderer.js): roads orchestration (layer + pipeline + UI + frame sync wiring).
-- [fatLinePipeline.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/fatLinePipeline.js): tile processing, geometry grouping, fat-line creation, materials/state application.
+- [fatLinePipeline.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/fatLinePipeline.js): pipeline orchestrator composing geometry/materials/tile-lifecycle modules.
+- [geometry.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/pipeline/geometry.js): segment sanitization, grouping, and source mesh traversal.
+- [materials.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/pipeline/materials.js): line material cache + global thickness/depth state application.
+- [tileLifecycle.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/pipeline/tileLifecycle.js): per-tile anchor lifecycle, rebuild queue, frustum propagation.
 - [layer.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/layer.js): WFS roads source + DEM altitude draping.
 - [frameSync.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/frameSync.js): per-frame uniforms and anchor sync.
 - [ui.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/ui.js): roads settings UI and events.
@@ -87,5 +90,5 @@ See the full walkthrough in [VECTOR_LINES_DOSSIER.md](/Users/MadMax/Developer/We
 ## Known Issues / TO DO
 
 - Multiple `main-*.js` variants duplicate large sections of logic; shared modules would reduce maintenance risk.
-- `src/roads/fatLinePipeline.js` is still large and could be split further (`geometry`, `materials`, `tile lifecycle`) if iteration continues.
+- Road rendering modules are now split, but they are still tightly coupled to current road schema (`nature`) and should be parameterized for generic reuse.
 - `package.json` declares `"type": "commonjs"` although project source is ESM-style (`import` syntax).
