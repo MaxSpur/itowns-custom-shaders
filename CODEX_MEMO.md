@@ -1,10 +1,10 @@
 # CODEX_MEMO
 
 ## CURRENT_TASK
-Second-pass modularization of roads rendering internals for long-term reuse across iTowns projects.
+Address follow-up cleanup/performance items found during modularization.
 
 ## CURRENT_SUBTASK
-Completed second-pass split and validation; repository docs/memo updated to reflect reusable road pipeline layout.
+Prevent unbounded `requestAnimationFrame` retries for detached road roots in tile lifecycle queueing.
 
 ## SESSION INSIGHTS
 - `main.js` is now a thin orchestrator that wires modules.
@@ -56,11 +56,13 @@ Completed second-pass split and validation; repository docs/memo updated to refl
 - Vector data source is IGN BDTOPO WFS (`BDTOPO_V3:troncon_de_route`) through `itowns.WFSSource` + `FeatureGeometryLayer`.
 - The project has many experimental `main-*.js` variants with overlapping logic; this is useful history but high maintenance overhead.
 - `npm run build` currently passes with the modularized pipeline and dynamic base-path config.
+- `package.json` now uses `"type": "module"` to match the project’s ESM source/import style.
+- `src/roads/frameSync.js` now updates renderer pixel ratio only when `window.devicePixelRatio` changes (instead of every frame), reducing unnecessary per-frame renderer state calls.
+- `src/roads/pipeline/tileLifecycle.js` queue retries are now bounded (`ATTACH_RETRY_MAX_ATTEMPTS` / `ATTACH_RETRY_MAX_WAIT_MS`) so detached roots cannot spin forever in RAF loops.
 
 ## Problems / TO DO
 - Consolidate duplicated road/shader code across many `main-*.js` files into shared modules (source setup, fat-line conversion, shader patching, UI state).
 - Keep `index.html -> main.js` as the canonical demo entry and avoid drifting back to experimental `main-*` variants as defaults.
-- `package.json` uses `"type": "commonjs"` while source files are ESM (`import` syntax); this can confuse tooling/readers.
 - Complete the cleanup commit that removes tracked generated/local artifacts (`node_modules`, build folders, local certs, `.DS_Store`) so `.gitignore` fully takes effect in history.
 - The new road modules are cleaner but still tied to this road schema (`nature` width/color mapping); add a config-driven adapter layer to maximize cross-project portability.
 - Production bundle is large (~1.25 MB minified JS); consider code-splitting/manual chunks to reduce load and keep deployment lighter.

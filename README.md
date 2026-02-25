@@ -91,4 +91,3 @@ See the full walkthrough in [VECTOR_LINES_DOSSIER.md](/Users/MadMax/Developer/We
 
 - Multiple `main-*.js` variants duplicate large sections of logic; shared modules would reduce maintenance risk.
 - Road rendering modules are now split, but they are still tightly coupled to current road schema (`nature`) and should be parameterized for generic reuse.
-- `package.json` declares `"type": "commonjs"` although project source is ESM-style (`import` syntax).

@@ -15,6 +15,9 @@ export function createRoadTileLifecycle({
     roadTileAnchors,
     notifyRoadLayers,
 }) {
+    const ATTACH_RETRY_MAX_ATTEMPTS = 300;
+    const ATTACH_RETRY_MAX_WAIT_MS = 10000;
+
     const scratchRoadRootInverse = new THREE.Matrix4();
     let rebuildPending = false;
 
@@ -152,13 +155,41 @@ export function createRoadTileLifecycle({
 
         root.userData = root.userData || {};
         root.userData.hasQueuedFatLine = true;
+        const startedAt = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now()
+            : Date.now();
+        let attempts = 0;
 
         const attemptProcess = () => {
-            if (!root.parent) {
-                requestAnimationFrame(attemptProcess);
+            if (!root?.userData?.hasQueuedFatLine) {
                 return;
             }
-            processRoadTileRoot(root);
+
+            if (root.parent) {
+                try {
+                    processRoadTileRoot(root);
+                } catch (err) {
+                    root.userData.hasQueuedFatLine = false;
+                    console.error('[RoadPipeline] Failed to process queued road root', err);
+                }
+                return;
+            }
+
+            attempts += 1;
+            const now = (typeof performance !== 'undefined' && performance.now)
+                ? performance.now()
+                : Date.now();
+            if (
+                attempts >= ATTACH_RETRY_MAX_ATTEMPTS ||
+                (now - startedAt) >= ATTACH_RETRY_MAX_WAIT_MS
+            ) {
+                root.userData.hasQueuedFatLine = false;
+                return;
+            }
+
+            if (!root.parent) {
+                requestAnimationFrame(attemptProcess);
+            }
         };
 
         requestAnimationFrame(attemptProcess);

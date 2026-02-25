@@ -11,6 +11,7 @@ import {
 const rendererSize = new THREE.Vector2();
 let lastRendererWidth = -1;
 let lastRendererHeight = -1;
+let lastDevicePixelRatio = -1;
 const tmpCamDir = new THREE.Vector3();
 
 export function attachRoadFrameSync(view, {
@@ -20,8 +21,16 @@ export function attachRoadFrameSync(view, {
 }) {
     view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
         const renderer = view.mainLoop.gfxEngine.renderer;
+        const devicePixelRatio = (typeof window !== 'undefined' && Number.isFinite(window.devicePixelRatio))
+            ? window.devicePixelRatio
+            : 1;
+
+        if (devicePixelRatio !== lastDevicePixelRatio) {
+            renderer.setPixelRatio(devicePixelRatio);
+            lastDevicePixelRatio = devicePixelRatio;
+        }
+
         renderer.getSize(rendererSize);
-        renderer.setPixelRatio(window.devicePixelRatio);
 
         if (rendererSize.x !== lastRendererWidth || rendererSize.y !== lastRendererHeight) {
             lastRendererWidth = rendererSize.x;
