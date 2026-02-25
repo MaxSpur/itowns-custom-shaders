@@ -124,6 +124,214 @@ const RoadGlobalState = {
     disableFrustumCulling: false,
     useIndividualWidths: true,
 };
+const ROAD_UI_STORAGE_KEY = 'itowns-road-ui-v1';
+const RoadUIStorage = (() => {
+    let cache = {};
+    if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+            const raw = window.localStorage.getItem(ROAD_UI_STORAGE_KEY);
+            if (raw) {
+                cache = JSON.parse(raw) || {};
+            }
+        } catch (err) {
+            console.warn('Failed to parse stored road UI state', err);
+            cache = {};
+        }
+    }
+    return {
+        get() {
+            return cache;
+        },
+        save(patch = {}) {
+            cache = { ...cache, ...patch };
+            if (typeof window !== 'undefined' && window.localStorage) {
+                try {
+                    window.localStorage.setItem(ROAD_UI_STORAGE_KEY, JSON.stringify(cache));
+                } catch (err) {
+                    console.warn('Failed to persist road UI state', err);
+                }
+            }
+        }
+    };
+})();
+
+function applyPersistedRoadGlobalState() {
+    const saved = RoadUIStorage.get();
+    if (!saved) return;
+    if ('visible' in saved) RoadGlobalState.visible = !!saved.visible;
+    if ('widthMultiplier' in saved && Number.isFinite(saved.widthMultiplier)) RoadGlobalState.widthMultiplier = saved.widthMultiplier;
+    if ('useWorldUnits' in saved) RoadGlobalState.useWorldUnits = !!saved.useWorldUnits;
+    if ('depthTest' in saved) RoadGlobalState.depthTest = !!saved.depthTest;
+    if ('altitudeOffset' in saved && Number.isFinite(saved.altitudeOffset)) RoadGlobalState.altitudeOffset = saved.altitudeOffset;
+    if ('useProjection' in saved) RoadGlobalState.useProjection = !!saved.useProjection;
+    if ('cullBackfaces' in saved) RoadGlobalState.cullBackfaces = !!saved.cullBackfaces;
+    if ('disableFrustumCulling' in saved) RoadGlobalState.disableFrustumCulling = !!saved.disableFrustumCulling;
+    if ('useIndividualWidths' in saved) RoadGlobalState.useIndividualWidths = !!saved.useIndividualWidths;
+}
+
+function getPersistedSphereSettings() {
+    const saved = RoadUIStorage.get() || {};
+    const defaults = { radius: 1000, offset01: 1.0, opacity: 0.54, coneHeightMul: 1.0 };
+    return {
+        radius: Number.isFinite(saved.sphereRadius) ? saved.sphereRadius : defaults.radius,
+        offset01: Number.isFinite(saved.sphereOffset) ? saved.sphereOffset : defaults.offset01,
+        opacity: Number.isFinite(saved.sphereOpacity) ? saved.sphereOpacity : defaults.opacity,
+        coneHeightMul: Number.isFinite(saved.sphereConeHeightMul) ? saved.sphereConeHeightMul : defaults.coneHeightMul,
+    };
+}
+
+// --- Sphere/cone UI mapping helpers ----------------------------------------
+const VIEW_RADIUS_MIN = 100;
+const VIEW_RADIUS_MAX = 20000;
+
+// --- Cone height multiplier mapping (for cone mode) ------------------------
+const CONE_HEIGHT_MIN = 0.1;
+const CONE_HEIGHT_MAX = 10.0;
+
+function coneHeightMulFromSlider01(u) {
+    const clamped = THREE.MathUtils.clamp(+u || 0, 0, 1);
+    const k = CONE_HEIGHT_MAX / CONE_HEIGHT_MIN;
+    return CONE_HEIGHT_MIN * Math.pow(k, clamped);
+}
+
+function slider01FromConeHeightMul(mul) {
+    const clamped = THREE.MathUtils.clamp(
+        +mul || 1.0,
+        CONE_HEIGHT_MIN,
+        CONE_HEIGHT_MAX,
+    );
+    const k = CONE_HEIGHT_MAX / CONE_HEIGHT_MIN;
+    return Math.log(clamped / CONE_HEIGHT_MIN) / Math.log(k);
+}
+
+// Slider u in [0,1]  →  radius in meters (log / exponential mapping)
+function radiusFromSlider01(u) {
+    const clamped = THREE.MathUtils.clamp(+u || 0, 0, 1);
+    const k = VIEW_RADIUS_MAX / VIEW_RADIUS_MIN;
+    return VIEW_RADIUS_MIN * Math.pow(k, clamped);
+}
+
+// Radius in meters  →  slider u in [0,1]
+function slider01FromRadius(rMeters) {
+    const clamped = THREE.MathUtils.clamp(+rMeters || VIEW_RADIUS_MIN,
+        VIEW_RADIUS_MIN, VIEW_RADIUS_MAX);
+    const k = VIEW_RADIUS_MAX / VIEW_RADIUS_MIN;
+    return Math.log(clamped / VIEW_RADIUS_MIN) / Math.log(k);
+}
+
+const PANEL_BASE_STYLE = {
+    position: 'absolute',
+    zIndex: 100,
+    background: '#171b2833',
+    border: '1px solid #2e344a',
+    borderRadius: '12px',
+    padding: '14px 16px',
+    color: '#fff',
+    fontFamily: 'Inter, system-ui, sans-serif',
+    fontSize: '13px',
+    minWidth: '240px',
+    maxWidth: '270px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '10px',
+    boxShadow: '0 14px 40px rgba(0,0,0,0.35)',
+    backdropFilter: 'blur(12px)',
+};
+const UI_BUTTON_STYLE = 'padding:7px 12px;border-radius:6px;background:transparent;color:inherit;font-size:12px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;cursor:pointer;';
+const TOGGLE_LABEL_STYLE = 'display:flex;align-items:center;gap:10px;font-size:13px;';
+const TOGGLE_TEXT_STYLE = 'flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+const UI_STYLE_TAG_ID = 'itowns-road-ui-styles';
+
+function applyPanelStyle(element, overrides = {}) {
+    Object.assign(element.style, PANEL_BASE_STYLE, overrides);
+}
+
+function ensureUIPanelStyles() {
+    if (document.getElementById(UI_STYLE_TAG_ID)) return;
+    const style = document.createElement('style');
+    style.id = UI_STYLE_TAG_ID;
+    style.textContent = `
+    .itowns-ui-panel button {
+        border: 1px solid #2e344a;
+        background: rgba(58,61,79,0.45);
+        color: #f4f7ff;
+        transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .itowns-ui-panel button:hover {
+        background: rgba(85, 101, 138, 0.7);
+        border-color: #55618c;
+    }
+    .itowns-ui-panel button:active {
+        background: #6573b5;
+        border-color: #8797d5;
+    }
+    .itowns-ui-panel button.is-active {
+        background: #5e6dd0;
+        border-color: #8ea0ff;
+        box-shadow: 0 0 12px rgba(102, 141, 255, 0.4);
+        color: #fff;
+    }
+    .itowns-ui-panel input[type="checkbox"] {
+        appearance: none;
+        width: 17px;
+        height: 17px;
+        border-radius: 4px;
+        border: 1px solid #4d5063;
+        background: rgba(255,255,255,0.08);
+        transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.25s ease;
+        cursor: pointer;
+    }
+    .itowns-ui-panel input[type="checkbox"]:hover {
+        border-color: #8aa4ff;
+        box-shadow: 0 0 6px rgba(122, 149, 255, 0.35);
+    }
+    .itowns-ui-panel input[type="checkbox"]:checked {
+        background: linear-gradient(135deg,#65c1ff,#5b7cff);
+        border-color: #86b8ff;
+        box-shadow: 0 0 8px rgba(87, 143, 255, 0.5);
+    }
+    .itowns-ui-panel input[type="range"] {
+        -webkit-appearance: none;
+        width: 100%;
+        height: 6px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.22);
+        outline: none;
+        cursor: pointer;
+    }
+    .itowns-ui-panel input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid #8fb4ff;
+        background: #fff;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    .itowns-ui-panel input[type="range"]:hover::-webkit-slider-thumb {
+        transform: scale(1.08);
+        border-color: #a7c6ff;
+    }
+    .itowns-ui-panel input[type="range"]::-moz-range-thumb {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid #8fb4ff;
+        background: #fff;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    .itowns-ui-panel input[type="range"]:hover::-moz-range-thumb {
+        transform: scale(1.08);
+        border-color: #a7c6ff;
+    }
+    `;
+    document.head.appendChild(style);
+}
+
+applyPersistedRoadGlobalState();
 
 // ----------------------------------------------------------------------------
 // 2b. SPHERE / STEREOGRAPHIC PROJECTION STATE
@@ -139,79 +347,306 @@ const StereoUniforms = {
     uCameraPos: { value: new THREE.Vector3() },
     uCullBackfaces: { value: 0.0 },
     uSphereBasis: { value: new THREE.Matrix3() },
+
+    // precomputed uniforms:
+    uTwoR: { value: 0.0 },                // 2 * R
+    uInv2R: { value: 0.0 },               // 1 / (2 * R)
+    uCameraDirFromCenter: { value: new THREE.Vector3(0, 0, 1) }, // normalized
+
+    // cone + mode
+    uProjectionSurface: { value: 0.0 },             // 0 = sphere, 1 = cone
+    uConeApex: { value: new THREE.Vector3() },      // apex in world
+    uConeAxis: { value: new THREE.Vector3(0, 1, 0) }, // unit axis (upwards)
+    uConeSlope: { value: 1.0 },                     // k = r_ground / hc
+    uConeTopZ: { value: 1.0 },                      // distance apex → cone top (along axis)
+
+    // NEW: view radius / ground center for cone
+    uViewRadius: { value: 1000.0 },
+    uGroundCenter: { value: new THREE.Vector3() },
 };
 
 const RoadFatLines = new Set();
+
+// Cone visualization mode:
+//  - true  → truncated from sphere zenith down to GROUND (bottom radius = viewRadius)
+//  - false → truncated from sphere zenith down to SPHERE BOTTOM (your current behaviour)
+const CONE_TRUNCATE_AT_GROUND = true;
 
 function makeSphereController(view, {
     radius = 1000,
     offset01 = 1.0,
     opacity = 0.5,
     color = 0xff0000,
+    coneHeightMul = 1.0,
 } = {}) {
-    const geom = new THREE.SphereGeometry(1, 32, 16);
-    const mat = new THREE.MeshBasicMaterial({
+    const DEBUG_SPHERE_CTL = false;
+    const logSphere = (...args) => {
+        if (!DEBUG_SPHERE_CTL) return;
+        console.log('[SphereCtl]', ...args);
+    };
+
+
+    // external clamp/diagnostic cylinder (the green one from addClampDebugCylinder)
+    let externalClampCylinder = null;
+
+    logSphere('init controller', { radius, offset01, opacity, color });
+
+    // --- Sphere mesh ---------------------------------------------------------
+    const sphereGeom = new THREE.SphereGeometry(1, 32, 16);
+    const sphereMat = new THREE.MeshBasicMaterial({
         color,
         transparent: true,
         opacity,
         depthWrite: false,
         side: THREE.DoubleSide,
     });
-    const mesh = new THREE.Mesh(geom, mat);
-    mesh.renderOrder = 20;
-    view.scene.add(mesh);
+    const sphereMesh = new THREE.Mesh(sphereGeom, sphereMat);
+    sphereMesh.renderOrder = 20;
+    view.scene.add(sphereMesh);
+
+    // --- Cone mesh (created as cylinder; we control radii) -------------------
+
+    let displayMode = 'sphere'; // 'sphere' | 'cone'
+
+    // --- Parameter state: view radius + intersection ------------------------
+    // Use the incoming radius/offset as the initial sphere configuration, then
+    // derive an equivalent "view radius" so initial visuals stay unchanged.
+    const baseF = Math.sqrt(Math.max(1e-6, 2.0 * offset01 - offset01 * offset01));
+    const initialViewRadius = radius * baseF;
 
     const state = {
         groundECEF: new THREE.Vector3(),
         hasGround: false,
-        radius,
-        offset01,
+
+        // UI-level parameters
+        viewRadius: initialViewRadius, // intersection circle radius on ground
+        intersection01: offset01,      // controls intersection angle
+
+        sphereRadius: radius,
+        coneHeightMul: 1.0,
     };
 
     function updateTransform() {
-        if (!state.hasGround) return;
+        if (!state.hasGround) {
+            logSphere('updateTransform skipped, no ground yet');
+            return;
+        }
+        logSphere('updateTransform begin', {
+            viewRadius: state.viewRadius,
+            intersection01: state.intersection01,
+        });
 
         const normal = state.groundECEF.clone().normalize();
-        const lift = state.radius * (1.0 - state.offset01);
-        const center = state.groundECEF.clone().addScaledVector(normal, lift);
+        const G = state.groundECEF; // ground intersection center
 
-        mesh.position.copy(center);
-        mesh.scale.setScalar(state.radius);
+        // Slider value u in [0,1]
+        const u = THREE.MathUtils.clamp(state.intersection01, 0, 1);
 
-        mesh.lookAt(new THREE.Vector3(0, 0, 0));
-        mesh.rotateX(Math.PI / 2);
-        updateSphereBasisUniform();
+        // Non-linear mapping for finer control near 0
+        const epsT = 1e-4;
+        const tUnit = u * u; // [0,1]
+        const t = epsT + (1.0 - 2.0 * epsT) * tUnit; // t in (0,1)
+
+        // View radius (meters)
+        const rView = Math.max(1e-3, state.viewRadius);
+
+        // f(t) = sqrt(2t - t^2) → relation between sphere radius and intersection radius
+        const f = Math.sqrt(Math.max(1e-6, 2.0 * t - t * t));
+
+        // Sphere radius such that intersection radius is exactly rView
+        const R = rView / f;
+        state.sphereRadius = R;
+
+        // Sphere center height above ground: h = R * (1 - t)
+        const h = R * (1.0 - t);
+        const C = G.clone().addScaledVector(normal, h);
+
+        // Sphere zenith
+        const Z = C.clone().addScaledVector(normal, R);
+
+        // --- Sphere placement ------------------------------------------------
+        sphereMesh.position.copy(C);
+        sphereMesh.scale.setScalar(R);
+        sphereMesh.lookAt(new THREE.Vector3(0, 0, 0));
+        sphereMesh.rotateX(Math.PI / 2);
+
+        // --- Shared cone/infinite-cone quantities ----------------------------
+        // Distance from sphere top to ground: P = R(2 - t)
+        const P = R * (2.0 - t);
+
+        // Apex depth below ground so that the ground intersection circle
+        // has radius rView: d^2 = h_c * R * (1 - t)  =>  h_c = d^2 / (R(1 - t))
+        const eps = 1e-6;
+        const denom = Math.max(eps, R * (1.0 - t));
+        const hc = (rView * rView) / denom;  // distance ground → apex
+
+        // Total distance from zenith Z down to apex
+        const totalHeight = P + hc;
+
+        // Radius at zenith in the infinite cone
+        const minRadius = 1e-3;
+        let rTopInfinite = rView * (totalHeight / hc);
+        rTopInfinite = Math.max(minRadius, rTopInfinite);
+
+        // --- Choose cone truncation mode -------------------------------------
+        let cylTopRadius;
+        let cylBottomRadius;
+        let cylHeight;
+        let cylCenter;
+        let cylAxisDir;
+
+        const up = new THREE.Vector3(0, 1, 0);
+
+        // Cone defined by apex below ground and radius rView at ground.
+        // r(h) = rView * (1 + h / hc), where h is height above ground.
+        const k = state.coneHeightMul || 1.0;
+
+        const hTopDefault = P;                      // sphere zenith height
+        const hTop = THREE.MathUtils.clamp(
+            k * hTopDefault,
+            CONE_HEIGHT_MIN * hTopDefault,
+            CONE_HEIGHT_MAX * hTopDefault,
+        );
+
+        const rTop = rView * (1.0 + hTop / hc);     // radius at new top height
+
+        cylBottomRadius = Math.max(minRadius, rView);
+        cylTopRadius = Math.max(minRadius, rTop);
+        cylHeight = hTop;
+        cylCenter = G.clone().addScaledVector(normal, 0.5 * hTop);
+        cylAxisDir = normal;
+
+        const q = new THREE.Quaternion().setFromUnitVectors(up, cylAxisDir);
+
+        // --- External green cone / truncated cone ----------------------------
+        if (externalClampCylinder) {
+            if (externalClampCylinder.geometry) {
+                externalClampCylinder.geometry.dispose();
+            }
+            externalClampCylinder.geometry = new THREE.CylinderGeometry(
+                cylTopRadius,
+                cylBottomRadius,
+                cylHeight,
+                48,
+                1,
+                true // openEnded
+            );
+
+            externalClampCylinder.quaternion.copy(q);
+            externalClampCylinder.position.copy(cylCenter);
+            externalClampCylinder.visible = (displayMode === 'cone');
+            externalClampCylinder.updateMatrixWorld(true);
+        }
+
+        // Infinite cone definition for the shader
+        // apex: below ground along -normal
+        const apex = G.clone().addScaledVector(normal, -hc);
+
+        // slope: radius at ground / height of ground above apex
+        const kSlope = rView / hc;
+
+        // z coordinate of cone top in apex-frame
+        const zTop = hc + hTop;
+
+        StereoUniforms.uConeApex.value.copy(apex);
+        StereoUniforms.uConeAxis.value.copy(normal);
+        StereoUniforms.uConeSlope.value = kSlope;
+        StereoUniforms.uConeTopZ.value = zTop;
+
+        StereoUniforms.uViewRadius.value = rView;
+        StereoUniforms.uGroundCenter.value.copy(G);
+
+
+
         view.notifyChange(true);
     }
 
     return {
-        mesh,
+        mesh: sphereMesh,
+        // coneMesh,
         hasGround() {
             return state.hasGround;
         },
         setGroundFromWorld(vec3) {
             state.groundECEF.copy(vec3);
             state.hasGround = true;
+            logSphere('setGroundFromWorld', vec3.toArray());
             updateTransform();
         },
+        // "Radius" slider → view radius (intersection radius on ground)
         setRadius(meters) {
-            state.radius = Math.max(1, +meters);
+            state.viewRadius = Math.max(1, +meters);
+            logSphere('setRadius', state.viewRadius);
             updateTransform();
         },
+        // "Offset" slider → intersection parameter (angle)
         setOffset01(t) {
-            state.offset01 = Math.min(1, Math.max(0, +t));
+            state.intersection01 = Math.min(1, Math.max(0, +t));
+            logSphere('setOffset01', state.intersection01);
             updateTransform();
         },
         setOpacity(a) {
-            mat.opacity = Math.min(1, Math.max(0, +a));
+            const clamped = Math.min(1, Math.max(0, +a));
+            sphereMat.opacity = clamped;
+            // coneMat.opacity = clamped;
+            // change the opactity of the external cylinder too
+            if (externalClampCylinder && externalClampCylinder.material) {
+                externalClampCylinder.material.opacity = clamped;
+            }
+            logSphere('setOpacity', clamped);
             view.notifyChange(true);
         },
         setColor(hex) {
-            mat.color.set(hex);
+            sphereMat.color.set(hex);
+            // coneMat.color.set(hex);
+            logSphere('setColor', hex);
             view.notifyChange(true);
+        },
+        setConeHeightMul(mul) {
+            const k = THREE.MathUtils.clamp(+mul || 1.0, CONE_HEIGHT_MIN, CONE_HEIGHT_MAX);
+            state.coneHeightMul = k;
+            logSphere('setConeHeightMul', k);
+            updateTransform();
+        },
+        // setDisplayMode(mode) {
+        //     displayMode = mode === 'cone' ? 'cone' : 'sphere';
+        //     sphereMesh.visible = displayMode === 'sphere';
+        //     coneMesh.visible = displayMode === 'cone';
+        //     logSphere('setDisplayMode', displayMode);
+        //     view.notifyChange(true);
+        // },
+        setDisplayMode(mode) {
+            displayMode = mode === 'cone' ? 'cone' : 'sphere';
+            const showCone = (displayMode === 'cone');
+            sphereMesh.visible = !showCone;
+            // We stop using the internal red cone for now.
+            // coneMesh.visible = false;
+            if (externalClampCylinder) {
+                externalClampCylinder.visible = showCone;
+            }
+
+            // Tell the shader which surface to use
+            StereoUniforms.uProjectionSurface.value = (displayMode === 'cone') ? 1.0 : 0.0;
+
+            logSphere('setDisplayMode', displayMode);
+            view.notifyChange(true);
+        },
+        // NEW: allow attaching the green debug cylinder from outside
+        attachClampCylinder(mesh) {
+            externalClampCylinder = mesh;
+            if (externalClampCylinder) {
+                externalClampCylinder.frustumCulled = false;
+                externalClampCylinder.visible = (displayMode === 'cone');
+            }
+            // Re-apply transform so it jumps to the current ground point
+            updateTransform();
+        },
+        getDisplayMode() {
+            return displayMode;
         },
     };
 }
+
 
 function initSphereAtLookAt(view, sphereCtl) {
     const c = view.controls.getLookAtCoordinate();
@@ -219,126 +654,239 @@ function initSphereAtLookAt(view, sphereCtl) {
     sphereCtl.setGroundFromWorld(new THREE.Vector3(groundECEF.x, groundECEF.y, groundECEF.z));
 }
 
-function bindSpherePicking(viewerDiv, view, sphereCtl, toggleKey = 's') {
-    let pickMode = false;
-    viewerDiv.addEventListener('keydown', (event) => {
-        if (event.key === toggleKey) pickMode = true;
+function addClampDebugCylinder(view) {
+
+    const geometry = new THREE.CylinderGeometry(0, 1, 1, 24, 1, true);
+    // const geometry = new THREE.CylinderGeometry(1000, 0, 8000, 24, 1, true);
+    const material = new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        transparent: true,
+        opacity: 0.8,
+        side: THREE.BackSide,
+        depthWrite: false,
+        depthTest: false,
+        // wireframe: true,
     });
-    viewerDiv.addEventListener('keyup', (event) => {
-        if (event.key === toggleKey) pickMode = false;
-    });
-    viewerDiv.addEventListener('click', (event) => {
-        if (!pickMode) return;
-        const picked = view.getPickingPositionFromDepth(view.eventToViewCoords(event));
-        if (picked) sphereCtl.setGroundFromWorld(picked);
-    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = 'ClampDebugCone';
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 40;
+
+    view.scene.add(mesh);
+    view.notifyChange(true);
+
+    if (typeof window !== 'undefined') {
+        window.DebugClampCylinder = mesh;
+    }
+
+    // Attach to sphere controller so it follows all updates
+    if (SphereProjectionState.controller &&
+        typeof SphereProjectionState.controller.attachClampCylinder === 'function') {
+        SphereProjectionState.controller.attachClampCylinder(mesh);
+    }
+
+    console.log('[Debug] Clamp cone added');
 }
 
-function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.0, opacity: 0.5 }) {
-    const box = document.createElement('div');
-    Object.assign(box.style, {
-        position: 'absolute',
-        left: '10px',
-        top: '10px',
-        zIndex: 20,
-        background: '#313336bb',
-        border: '1px solid #222',
-        borderRadius: '7px',
-        padding: '8px 10px',
-        color: '#fff',
-        font: '13px/1.2 Arial, sans-serif',
-        minWidth: '220px',
+function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.0, opacity: 0.5, coneHeightMul: 1.0 }) {
+    ensureUIPanelStyles();
+    const panel = document.createElement('div');
+    applyPanelStyle(panel, { left: '10px', top: '10px', minWidth: '280px' });
+    panel.classList.add('itowns-ui-panel');
+    const state = {
+        radius: Number.isFinite(init.radius) ? init.radius : 1000,
+        offset01: Number.isFinite(init.offset01) ? init.offset01 : 1.0,
+        opacity: Number.isFinite(init.opacity) ? init.opacity : 0.5,
+        coneHeightMul: Number.isFinite(init.coneHeightMul) ? init.coneHeightMul : 1.0,
+    };
+
+    const radiusSlider01 = slider01FromRadius(state.radius);
+    const offsetSlider01 = THREE.MathUtils.clamp(state.offset01, 0, 1);
+
+    const coneHeightSlider01 = slider01FromConeHeightMul(state.coneHeightMul);
+
+    panel.innerHTML = `
+        <div style="font-weight:bold; font-size:14px; border-bottom:1px solid #555; padding-bottom:5px;">
+            Projection Controls
+        </div>
+        <div style="display:flex; gap:8px; margin:6px 0 4px 0;">
+            <button id="sp-mode-sphere" style="${UI_BUTTON_STYLE}flex:1;" class="is-active">Sphere</button>
+            <button id="sp-mode-cone" style="${UI_BUTTON_STYLE}flex:1;">Cone</button>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>View Radius (m)</span>
+                <span id="sp-rv">${state.radius.toFixed(0)} m</span>
+            </div>
+            <!-- radius slider is now 0..1, mapped logarithmically to meters -->
+            <input id="sp-r" type="range" min="0" max="1" step="0.001" value="${radiusSlider01}">
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Intersection</span>
+                <span id="sp-ov">${state.offset01.toFixed(3)}</span>
+            </div>
+            <!-- intersection slider also 0..1 with finer steps -->
+            <input id="sp-o" type="range" min="0" max="1" step="0.001" value="${offsetSlider01}">
+        </div>
+                <div id="sp-cone-height-wrapper" style="display:none; margin-top:6px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Cone height</span>
+                <span id="sp-chv">${state.coneHeightMul.toFixed(2)}×</span>
+            </div>
+            <input id="sp-ch" type="range" min="0" max="1" step="0.001" value="${coneHeightSlider01}">
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Opacity</span>
+                <span id="sp-av">${state.opacity.toFixed(2)}</span>
+            </div>
+            <input id="sp-a" type="range" min="0" max="1" step="0.01" value="${state.opacity}">
+        </div>
+        <div style="display:flex; gap:8px; margin-top:4px;">
+            <button id="sp-center" style="${UI_BUTTON_STYLE}flex:1;">Place @ center</button>
+            <button id="sp-pick" style="${UI_BUTTON_STYLE}flex:1;">Pick (S)</button>
+        </div>
+    `;
+    document.body.appendChild(panel);
+
+    const radiusInput = panel.querySelector('#sp-r');
+    const offsetInput = panel.querySelector('#sp-o');
+    const opacityInput = panel.querySelector('#sp-a');
+    const radiusLabel = panel.querySelector('#sp-rv');
+    const offsetLabel = panel.querySelector('#sp-ov');
+    const opacityLabel = panel.querySelector('#sp-av');
+    const btnCenter = panel.querySelector('#sp-center');
+    const btnPick = panel.querySelector('#sp-pick');
+
+    const btnModeSphere = panel.querySelector('#sp-mode-sphere');
+    const btnModeCone = panel.querySelector('#sp-mode-cone');
+
+    const coneHeightWrapper = panel.querySelector('#sp-cone-height-wrapper');
+    const coneHeightInput = panel.querySelector('#sp-ch');
+    const coneHeightLabel = panel.querySelector('#sp-chv');
+
+    const persistSphereState = () => {
+        RoadUIStorage.save({
+            sphereRadius: state.radius,
+            sphereOffset: state.offset01,
+            sphereOpacity: state.opacity,
+            coneHeightMul: state.coneHeightMul, // NEW
+        });
+    };
+
+
+    sphereCtl.setRadius(state.radius);
+    sphereCtl.setOffset01(state.offset01);
+    sphereCtl.setOpacity(state.opacity);
+
+    const updateModeButtons = () => {
+        const mode = sphereCtl.getDisplayMode ? sphereCtl.getDisplayMode() : 'sphere';
+        btnModeSphere.classList.toggle('is-active', mode === 'sphere');
+        btnModeCone.classList.toggle('is-active', mode === 'cone');
+        coneHeightWrapper.style.display = (mode === 'cone') ? 'block' : 'none';
+    };
+
+    btnModeSphere.addEventListener('click', () => {
+        if (sphereCtl.setDisplayMode) {
+            sphereCtl.setDisplayMode('sphere');
+        }
+        updateModeButtons();
     });
-    box.innerHTML = `
-    <div style="font-weight:700;margin-bottom:6px;">Projection sphere</div>
-    <label>Radius (m)
-      <input id="sp-r" type="range" min="10" max="20000" step="10" value="${init.radius}"/>
-    </label>
-    <div id="sp-rv" style="opacity:.8;margin-bottom:6px;">${init.radius}</div>
 
-    <label>Offset (0..1)
-      <input id="sp-o" type="range" min="0" max="1" step="0.01" value="${init.offset01}"/>
-    </label>
-    <div id="sp-ov" style="opacity:.8;margin-bottom:6px;">${init.offset01}</div>
+    btnModeCone.addEventListener('click', () => {
+        if (sphereCtl.setDisplayMode) {
+            sphereCtl.setDisplayMode('cone');
+        }
+        updateModeButtons();
+    });
 
-    <label>Opacity
-      <input id="sp-a" type="range" min="0" max="1" step="0.01" value="${init.opacity}"/>
-    </label>
-    <div id="sp-av" style="opacity:.8;margin-bottom:6px;">${init.opacity}</div>
+    // Initialize button state
+    updateModeButtons();
 
-    <div style="display:flex;gap:6px;margin-top:8px;">
-      <button id="sp-center" style="flex:1;background:#313336bb;border:1px solid #222;border-radius:6px;color:#fff;height:28px;">Place @ center</button>
-      <button id="sp-pick"   style="flex:1;background:#313336bb;border:1px solid #222;border-radius:6px;color:#fff;height:28px;">Pick (S)</button>
-    </div>
-  `;
-    document.body.appendChild(box);
+    radiusInput.addEventListener('input', (e) => {
+        const u = parseFloat(e.target.value);        // 0..1
+        state.radius = radiusFromSlider01(u);        // meters
+        radiusLabel.textContent = `${state.radius.toFixed(0)} m`;
+        sphereCtl.setRadius(state.radius);
+        persistSphereState();
+    });
 
-    const r = box.querySelector('#sp-r');
-    const o = box.querySelector('#sp-o');
-    const a = box.querySelector('#sp-a');
-    const rv = box.querySelector('#sp-rv');
-    const ov = box.querySelector('#sp-ov');
-    const av = box.querySelector('#sp-av');
-    const bCenter = box.querySelector('#sp-center');
-    const bPick = box.querySelector('#sp-pick');
+    offsetInput.addEventListener('input', (e) => {
+        state.offset01 = parseFloat(e.target.value); // 0..1 slider value
+        offsetLabel.textContent = state.offset01.toFixed(3);
+        sphereCtl.setOffset01(state.offset01);
+        persistSphereState();
+    });
 
-    sphereCtl.setRadius(+r.value);
-    sphereCtl.setOffset01(+o.value);
-    sphereCtl.setOpacity(+a.value);
+    coneHeightInput.addEventListener('input', (e) => {
+        const uHeight = parseFloat(e.target.value);
+        state.coneHeightMul = coneHeightMulFromSlider01(uHeight);
+        coneHeightLabel.textContent = `${state.coneHeightMul.toFixed(2)}×`;
+        sphereCtl.setConeHeightMul(state.coneHeightMul);
+        persistSphereState();
+    });
 
-    r.oninput = () => { rv.textContent = r.value; sphereCtl.setRadius(+r.value); };
-    o.oninput = () => { ov.textContent = o.value; sphereCtl.setOffset01(+o.value); };
-    a.oninput = () => { av.textContent = a.value; sphereCtl.setOpacity(+a.value); };
+    // Double-click to reset multiplier back to 1×
+    coneHeightInput.addEventListener('dblclick', () => {
+        state.coneHeightMul = 1.0;
+        const uReset = slider01FromConeHeightMul(state.coneHeightMul);
+        coneHeightInput.value = uReset.toString();
+        coneHeightLabel.textContent = `${state.coneHeightMul.toFixed(2)}×`;
+        sphereCtl.setConeHeightMul(state.coneHeightMul);
+        persistSphereState();
+    });
 
-    bCenter.onclick = () => {
+    opacityInput.addEventListener('input', (e) => {
+        state.opacity = parseFloat(e.target.value);
+        opacityLabel.textContent = state.opacity.toFixed(2);
+        sphereCtl.setOpacity(state.opacity);
+        persistSphereState();
+    });
+
+    btnCenter.addEventListener('click', () => {
         const c = view.controls.getLookAtCoordinate();
         const g = c.as(view.referenceCrs);
         sphereCtl.setGroundFromWorld(new THREE.Vector3(g.x, g.y, g.z));
+    });
+
+    let buttonPicking = false;
+    let keyPicking = false;
+    const updatePickVisual = () => {
+        const active = buttonPicking || keyPicking;
+        btnPick.classList.toggle('is-active', active);
     };
 
-    let picking = false;
-    const setButton = (active) => {
-        bPick.style.background = active ? '#222' : '#313336bb';
-    };
+    btnPick.addEventListener('click', () => {
+        buttonPicking = !buttonPicking;
+        updatePickVisual();
+    });
+
     viewerDiv.addEventListener('keydown', (event) => {
         if (event.key === 's') {
-            picking = true;
-            setButton(true);
+            keyPicking = true;
+            updatePickVisual();
         }
     });
     viewerDiv.addEventListener('keyup', (event) => {
         if (event.key === 's') {
-            picking = false;
-            setButton(false);
+            keyPicking = false;
+            updatePickVisual();
         }
     });
 
-    return box;
-}
-
-function createPerformancePanel() {
-    if (PerformancePanel.element) return PerformancePanel.element;
-    const panel = document.createElement('div');
-    Object.assign(panel.style, {
-        position: 'absolute', left: '10px', bottom: '10px', zIndex: 50,
-        background: '#111a', border: '1px solid #333', borderRadius: '6px',
-        padding: '8px 12px', color: '#fff', fontFamily: 'monospace',
-        fontSize: '12px', minWidth: '140px', pointerEvents: 'none',
+    viewerDiv.addEventListener('click', (event) => {
+        if (!(buttonPicking || keyPicking)) return;
+        const picked = view.getPickingPositionFromDepth(view.eventToViewCoords(event));
+        if (picked) sphereCtl.setGroundFromWorld(picked);
+        if (keyPicking) {
+            keyPicking = false;
+            updatePickVisual();
+        }
     });
-    panel.innerHTML = `
-        <div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Perf Monitor</div>
-        <div>FPS: <span id="perf-fps">0</span></div>
-        <div>Frame: <span id="perf-frame">0</span> ms</div>
-        <div>Lines: <span id="perf-lines">0</span></div>
-    `;
-    document.body.appendChild(panel);
-    PerformancePanel.element = panel;
-    PerformancePanel.fpsLabel = panel.querySelector('#perf-fps');
-    PerformancePanel.frameLabel = panel.querySelector('#perf-frame');
-    PerformancePanel.linesLabel = panel.querySelector('#perf-lines');
-    PerformancePanel.lastUpdate = performance.now();
-    PerformancePanel.frameCount = 0;
-    PerformancePanel.accumTime = 0;
+
+    updatePickVisual();
     return panel;
 }
 
@@ -347,14 +895,14 @@ const sphereCtl = makeSphereController(view, {
     offset01: 1.0,
     opacity: 0.54,
     color: 0xff0000,
+    coneHeightMul: 1.0,
 });
 SphereProjectionState.controller = sphereCtl;
 
 view.addEventListener(itowns.GLOBE_VIEW_EVENTS.GLOBE_INITIALIZED, () => {
     initSphereAtLookAt(view, sphereCtl);
-    bindSpherePicking(viewerDiv, view, sphereCtl, 's');
-    createSphereWidget(view, sphereCtl, { radius: 1000, offset01: 1.0, opacity: 0.54 });
-    createPerformancePanel();
+    createSphereWidget(view, sphereCtl, getPersistedSphereSettings());
+    addClampDebugCylinder(view);
 });
 
 function makeStereoProjectMaterial(mat) {
@@ -368,48 +916,300 @@ function makeStereoProjectMaterial(mat) {
         shader.uniforms.uCullBackfaces = StereoUniforms.uCullBackfaces;
         shader.uniforms.uSphereBasis = StereoUniforms.uSphereBasis;
 
+
+        // precomputed uniforms
+        shader.uniforms.uTwoR = StereoUniforms.uTwoR;
+        shader.uniforms.uInv2R = StereoUniforms.uInv2R;
+        shader.uniforms.uCameraDirFromCenter = StereoUniforms.uCameraDirFromCenter;
+
+        // cone + mode uniforms
+        shader.uniforms.uProjectionSurface = StereoUniforms.uProjectionSurface;
+        shader.uniforms.uConeApex = StereoUniforms.uConeApex;
+        shader.uniforms.uConeAxis = StereoUniforms.uConeAxis;
+        shader.uniforms.uConeSlope = StereoUniforms.uConeSlope;
+        shader.uniforms.uConeTopZ = StereoUniforms.uConeTopZ;
+
+        shader.uniforms.uViewRadius = StereoUniforms.uViewRadius;     // NEW
+        shader.uniforms.uGroundCenter = StereoUniforms.uGroundCenter;   // NEW
+
+
         let vs = shader.vertexShader;
         const inject = /* glsl */`
-    uniform vec3  uSphereCenter;
-    uniform float uSphereR;
-    uniform float uProjectionStrength;
-    uniform vec3  uCameraPos;
-    uniform float uCullBackfaces;
-    uniform mat3 uSphereBasis;
-    vec3 terrainToSphere(vec3 s){
-      float h_inv = 0.5 - s.y;
-      float hh = h_inv * h_inv;
-      float ss = s.x * s.x;
-      float tt = s.z * s.z;
-      float lower = hh - 2.0 * h_inv + ss + tt + 1.0;
-      float x = ((1.0 - h_inv) * s.x) / lower;
-      float y = 0.5 - (ss + tt) / lower;
-      float z = ((1.0 - h_inv) * s.z) / lower;
-      return vec3(x, y, z);
-    }
-    vec3 inverseStereoProject(vec3 wp){
-      if (uProjectionStrength <= 0.0) return wp;
-      float R = uSphereR;
-      if (R <= 0.0) return wp;
-      R = max(R, 1e-3);
-      vec3  C = uSphereCenter;
-      float d = distance(wp, C);
-      if (d <= R) return wp;
-      vec3 s = transpose(uSphereBasis) * ((C - wp) / (2.0*R));
-      vec3 q = terrainToSphere(s);
-      return C - (uSphereBasis * (q * (2.0*R)));
-    }
+uniform vec3  uSphereCenter;
+uniform float uSphereR;
+uniform float uProjectionStrength;
+uniform vec3  uCameraPos;
+uniform float uCullBackfaces;
+uniform mat3  uSphereBasis;
 
-    bool shouldCullHemisphere(vec3 originalWp){
-      if (uCullBackfaces <= 0.5 || uProjectionStrength <= 0.0) return false;
-      float R = uSphereR;
-      if (R <= 0.0) return false;
-      float d = distance(originalWp, uSphereCenter);
-      if (d <= R + 1e-3) return false;
-      vec3 normal = normalize(originalWp - uSphereCenter);
-      vec3 camDirFromCenter = normalize(uCameraPos - uSphereCenter);
-      return dot(normal, camDirFromCenter) > 0.0;
+// Precomputed uniforms:
+uniform float uTwoR;              // 2 * uSphereR
+uniform float uInv2R;             // 1 / (2 * uSphereR)
+uniform vec3  uCameraDirFromCenter; // normalized (camera - center)
+
+// NEW: cone + surface mode
+uniform float uProjectionSurface;   // 0 = sphere, 1 = cone
+uniform vec3  uConeApex;
+uniform vec3  uConeAxis;           // unit vector
+uniform float uConeSlope;          // k = r_ground / hc
+uniform float uConeTopZ;           // z_t (apex → top center along axis)
+
+uniform float uViewRadius;      // NEW
+uniform vec3  uGroundCenter;    // NEW
+
+// Helper: is stereographic projection actually active?
+bool isProjectionEnabled() {
+  return (uProjectionStrength > 0.0 && uSphereR > 0.0);
+}
+
+
+// ----------------- Sphere mapping -----------------
+
+
+vec3 terrainToSphere(vec3 s) {
+  // h = 0.5 - s.y
+  float h = 0.5 - s.y;
+
+  // squared radius in xz-plane
+  float r2 = s.x * s.x + s.z * s.z;
+
+  // denominator: h^2 - 2h + r2 + 1
+  float h2   = h * h;
+  float denom = h2 - 2.0 * h + r2 + 1.0;
+
+  // common scale factor for x and z
+  float k = (1.0 - h) / denom;
+
+  // y uses the same denom but different formula
+  float y = 0.5 - r2 / denom;
+
+  return vec3(k * s.x, y, k * s.z);
+}
+
+vec3 inverseStereoProject(vec3 wp) {
+  if (!isProjectionEnabled()) {
+    return wp;
+  }
+
+  float R = uSphereR;
+  vec3  C = uSphereCenter;
+
+  // Vector from center to world point
+  vec3 v  = wp - C;
+  float d2 = dot(v, v);
+  float R2 = R * R;
+
+  // Inside or on the sphere: no reprojection
+  if (d2 <= R2) {
+    return wp;
+  }
+
+  // (C - wp) / (2R) = -v / (2R) = -v * uInv2R
+  vec3 s = transpose(uSphereBasis) * (-v * uInv2R);
+  vec3 q = terrainToSphere(s);
+  return C - (uSphereBasis * (q * uTwoR));
+}
+
+
+// ----------------- Cone mapping -----------------
+// Cone:
+//  apex at uConeApex
+//  axis uConeAxis (unit, apex→up)
+//  slope k = uConeSlope, with r = k * z in apex-frame
+//  top center at z = uConeTopZ in apex-frame
+//
+// For a world point wp, we parametrize the line from top center
+// to wp, and intersect it with the infinite cone surface.
+
+vec3 inverseConeProject(vec3 wp) {
+  if (!isProjectionEnabled()) {
+    return wp;
+  }
+
+  // --- Do NOT project inside the view radius on the ground plane ----
+  // Project wp onto the ground plane through the local vertical (uConeAxis)
+  vec3 axis = normalize(uConeAxis);
+  vec3 vGC = wp - uGroundCenter;
+  float hAlong = dot(vGC, axis);
+  vec3 radialGC = vGC - hAlong * axis;  // component in the ground plane
+  float r2Ground = dot(radialGC, radialGC);
+  float vr2 = uViewRadius * uViewRadius;
+
+  // Small epsilon so points exactly on the circle are treated as "inside"
+  if (r2Ground <= vr2 + 1e-6) {
+    return wp;
+  }
+
+
+  vec3 apex = uConeApex;
+  float k   = uConeSlope;
+  float zTop = uConeTopZ;
+
+  // Position relative to apex
+  vec3 relP = wp - apex;
+  float zP  = dot(relP, axis);
+  vec3 radialP = relP - zP * axis;
+  float rP2 = dot(radialP, radialP);
+
+  float dz = zP - zTop;
+  float k2 = k * k;
+
+  // Quadratic in lambda:  λ^2 rP^2 = k^2 (zTop + λ dz)^2
+  float A = rP2 - k2 * dz * dz;
+  float B = -2.0 * k2 * zTop * dz;
+  float C = -k2 * zTop * zTop;
+
+  float eps = 1e-6;
+  float D = B * B - 4.0 * A * C;
+  if (D < eps) {
+    return wp;
+  }
+
+  float sqrtD = sqrt(max(D, 0.0));
+  float lambda;
+
+  if (abs(A) < eps) {
+    if (abs(B) < eps) {
+      return wp;
     }
+    lambda = -C / B;
+  } else {
+    float l1 = (-B + sqrtD) / (2.0 * A);
+    float l2 = (-B - sqrtD) / (2.0 * A);
+    bool l1Pos = (l1 > 0.0);
+    bool l2Pos = (l2 > 0.0);
+    if (l1Pos && l2Pos) {
+      lambda = min(l1, l2);
+    } else if (l1Pos) {
+      lambda = l1;
+    } else if (l2Pos) {
+      lambda = l2;
+    } else {
+      lambda = max(l1, l2);
+    }
+  }
+
+  // Intersection in apex-frame
+  vec3 radialI = lambda * radialP;
+  float zI = zTop + lambda * dz;
+  vec3 relI = radialI + zI * axis;
+
+  return apex + relI;
+}
+
+// ----------------- Surface selection wrapper -----------------
+
+vec3 applyProjection(vec3 wp) {
+  if (!isProjectionEnabled()) {
+    return wp;
+  }
+
+  if (uProjectionSurface > 0.5) {
+    // Cone mode
+    return inverseConeProject(wp);
+  } else {
+    // Sphere mode
+    return inverseStereoProject(wp);
+  }
+}
+
+
+// ----------------- Hemisphere culling (sphere only) ----------
+
+    // bool shouldCullHemisphere(vec3 originalWp){
+    //   if (uCullBackfaces <= 0.5 || uProjectionStrength <= 0.0) return false;
+    //   float R = uSphereR;
+    //   if (R <= 0.0) return false;
+    //   float d = distance(originalWp, uSphereCenter);
+    //   if (d <= R + 1e-3) return false;
+    //   vec3 normal = normalize(originalWp - uSphereCenter);
+    //   vec3 camDirFromCenter = normalize(uCameraPos - uSphereCenter);
+    //   return dot(normal, camDirFromCenter) > 0.0;
+    // }
+
+bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
+  if (uCullBackfaces <= 0.5 || !isProjectionEnabled()) {
+    return false;
+  }
+
+   // ---------------- SPHERE MODE ----------------
+ if (uProjectionSurface < 0.5) {
+  float R = uSphereR;
+  if (R <= 0.0) {
+    return false;
+  }
+
+  vec3 C = uSphereCenter;
+
+  // 1) Use ORIGINAL position to decide if the point is inside the sphere.
+  //    Anything inside (or on) should NEVER be culled: these are your
+  //    "unprojected" roads on the terrain, which must remain visible.
+  vec3 v  = originalWp - C;
+  float d2 = dot(v, v);
+  float R2 = R * R;
+  float eps = 1e-3;
+  if (d2 <= R2 + eps) {
+    return false;
+  }
+
+  // 2) For points outside the sphere (i.e., actually projected onto it),
+  //    use the projected point to test which hemisphere we are on.
+  
+  vec3 n = projectedP - C; // outward normal; magnitude doesn't matter for sign
+
+  // Pre-normalized on CPU:
+  vec3 camDirFromCenter = uCameraDirFromCenter;
+
+
+  // outward normal faces the camera → outside hemisphere → HIDE it
+  // (so we see the inside).
+  return dot(n, camDirFromCenter) > 0.0;
+}
+
+  // ---------------- CONE MODE ----------------
+  // Keep the same spirit:
+  //  - never cull anything inside the view radius
+  //  - for projected points, use the cone top center as reference and
+  //    cull the side facing the camera.
+
+  // 1) Inside view radius on ground? Never cull  (we do not project there).
+  vec3 axis = normalize(uConeAxis);
+  vec3 vGC = originalWp - uGroundCenter;
+  float hAlong = dot(vGC, axis);
+  vec3 radialGC = vGC - hAlong * axis; // in local "ground" plane
+  float r2Ground = dot(radialGC, radialGC);
+  float vr2 = uViewRadius * uViewRadius;
+
+  if (r2Ground <= vr2 + 1e-6) {
+    return false;
+  }
+
+  // 2) Estimate cone surface normal at the *projected* point
+  //    using the gradient of r - k z = 0:
+  //      n ∝ radialDir - k * axis
+  vec3 apex = uConeApex;
+  float kCone = uConeSlope;
+
+  vec3 ap = projectedP - apex;
+  float zC  = dot(ap, axis);
+  vec3 radialC = ap - zC * axis;
+  float rLen2 = dot(radialC, radialC);
+  if (rLen2 < 1e-8) {
+    // very close to the axis → normal ill-defined, don't cull
+    return false;
+  }
+
+  float rLen = sqrt(rLen2);
+  vec3 radialDir = radialC / rLen;
+  vec3 nSurf = normalize(radialDir - kCone * axis);  // outward normal
+
+  // 3) Compare normal to camera direction from the point
+  vec3 camDir = normalize(uCameraPos - projectedP);
+
+  // As for the sphere: if the outward normal faces the camera,
+  // we hide that fragment/vertex to only see the "inside" of the cone.
+  return dot(nSurf, camDir) > 0.0;
+}
   `;
 
         if (mat.isLineMaterial === true) {
@@ -418,7 +1218,7 @@ function makeStereoProjectMaterial(mat) {
                 /vec4\s+start\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceStart\s*,\s*1\.0\s*\)\s*;/,
                 `
     vec3 wpStart = (modelMatrix * vec4( instanceStart, 1.0 )).xyz;
-    vec3 pStart  = inverseStereoProject(wpStart);
+    vec3 pStart  = applyProjection(wpStart);
     vec4 start;
   `
             );
@@ -426,12 +1226,12 @@ function makeStereoProjectMaterial(mat) {
                 /vec4\s+end\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceEnd\s*,\s*1\.0\s*\)\s*;/,
                 `
     vec3 wpEnd = (modelMatrix * vec4( instanceEnd, 1.0 )).xyz;
-    vec3 pEnd  = inverseStereoProject(wpEnd);
+    vec3 pEnd  = applyProjection(wpEnd);
     vec4 end;
-    bool cullSegment = shouldCullHemisphere(wpStart) || shouldCullHemisphere(wpEnd);
+    bool cullSegment = shouldCullHemisphere(wpStart, pStart) || shouldCullHemisphere(wpEnd, pEnd);
     if (cullSegment) {
       start = vec4(1e9, 1e9, 1e9, 1.0);
-      end = vec4(1e9, 1e9, 1e9, 1.0);
+      end   = vec4(1e9, 1e9, 1e9, 1.0);
     } else {
       start = viewMatrix * vec4( pStart, 1.0 );
       end   = viewMatrix * vec4( pEnd, 1.0 );
@@ -445,15 +1245,15 @@ function makeStereoProjectMaterial(mat) {
                 shader.vertexShader.replace(
                     '#include <project_vertex>',
                     `
-          vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
-          vec3 p = inverseStereoProject(wp);
-          if (shouldCullHemisphere(wp)) {
-            gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
-          } else {
-            vec4 mv = viewMatrix * vec4(p, 1.0);
-            gl_Position = projectionMatrix * mv;
-          }
-        `
+      vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      vec3 p  = applyProjection(wp);
+      if (shouldCullHemisphere(wp, p)) {
+        gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
+      } else {
+        vec4 mv = viewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `
                 );
         } else if (mat.isMeshBasicMaterial || mat.isMeshPhongMaterial || mat.isMeshStandardMaterial) {
             shader.vertexShader =
@@ -461,15 +1261,15 @@ function makeStereoProjectMaterial(mat) {
                 shader.vertexShader.replace(
                     '#include <project_vertex>',
                     `
-          vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
-          vec3 p = inverseStereoProject(wp);
-          if (shouldCullHemisphere(wp)) {
-            gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
-          } else {
-            vec4 mv = viewMatrix * vec4(p, 1.0);
-            gl_Position = projectionMatrix * mv;
-          }
-        `
+      vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      vec3 p  = applyProjection(wp);
+      if (shouldCullHemisphere(wp, p)) {
+        gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
+      } else {
+        vec4 mv = viewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `
                 );
         } else {
             console.warn('Stereo projection: unsupported material type', mat?.type);
@@ -501,9 +1301,12 @@ const _scratchVecB = new THREE.Vector3();
 const _scratchMatrix = new THREE.Matrix4();
 const _scratchRootInverse = new THREE.Matrix4();
 const _scratchRoadRootInverse = new THREE.Matrix4();
+
 const _rendererSize = new THREE.Vector2();
 let _lastRendererWidth = -1;
 let _lastRendererHeight = -1;
+const _tmpCamDir = new THREE.Vector3(); // scratch
+
 const RoadTileAnchors = new Map();
 const tempColor = new THREE.Color();
 const RoadMaterialCache = new Map();
@@ -511,15 +1314,6 @@ const _basisUp = new THREE.Vector3();
 const _basisRef = new THREE.Vector3();
 const _basisX = new THREE.Vector3();
 const _basisZ = new THREE.Vector3();
-const PerformancePanel = {
-    element: null,
-    fpsLabel: null,
-    frameLabel: null,
-    linesLabel: null,
-    frameCount: 0,
-    accumTime: 0,
-    lastUpdate: performance.now(),
-};
 
 function resetProcessedFlag(root) {
     root.traverse((node) => {
@@ -1084,25 +1878,30 @@ function processRoadTileRoot(featureRoot) {
 Promise.all(roadLayers.map((layer) => view.addLayer(layer))).then(() => {
     console.log('Roads layer added');
     createRoadsUI();
-    // Set initial width value in the UI to match the default in RoadGlobalState
-    document.getElementById('ui-width-val').innerText = RoadGlobalState.widthMultiplier.toFixed(1) + 'x';
-    document.getElementById('ui-width').value = RoadGlobalState.widthMultiplier;
+    applyFrustumCullingState();
+    triggerUpdate();
 });
 
 // ----------------------------------------------------------------------------
 // 5. ROBUST SYNC LOOP
 // ----------------------------------------------------------------------------
 
+
 view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
     const frameStart = performance.now();
     const renderer = view.mainLoop.gfxEngine.renderer;
     renderer.getSize(_rendererSize);
+    // attempt at retina support
+    renderer.setPixelRatio(window.devicePixelRatio);
+
     if (_rendererSize.x !== _lastRendererWidth || _rendererSize.y !== _lastRendererHeight) {
         _lastRendererWidth = _rendererSize.x;
         _lastRendererHeight = _rendererSize.y;
         RoadGlobalState.resolution.set(_rendererSize.x, _rendererSize.y);
         syncMaterialResolutions();
     }
+
+    // Only needed if some shaders still use it:
     StereoUniforms.uCameraPos.value.copy(view.camera.camera3D.position);
 
     const sphereCtl = SphereProjectionState.controller;
@@ -1111,14 +1910,28 @@ view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
     const useCull = RoadGlobalState.cullBackfaces && !!active;
 
     if (active) {
+        const C = sphereCtl.mesh.position;
+        const rawR = sphereCtl.mesh.scale.x;
+        const R = Math.max(rawR, 1e-3); // clamp radius here, once
+
         updateSphereBasisUniform();
-        StereoUniforms.uSphereCenter.value.copy(sphereCtl.mesh.position);
-        StereoUniforms.uSphereR.value = sphereCtl.mesh.scale.x;
+
+        StereoUniforms.uSphereCenter.value.copy(C);
+        StereoUniforms.uSphereR.value = R;
+        StereoUniforms.uTwoR.value = 2 * R;
+        StereoUniforms.uInv2R.value = 1.0 / (2 * R);
+
+        _tmpCamDir.copy(view.camera.camera3D.position).sub(C).normalize();
+        StereoUniforms.uCameraDirFromCenter.value.copy(_tmpCamDir);
     } else {
         StereoUniforms.uSphereCenter.value.set(0, 0, 0);
-        StereoUniforms.uSphereR.value = -1;
+        StereoUniforms.uSphereR.value = -1.0;
+        StereoUniforms.uTwoR.value = 0.0;
+        StereoUniforms.uInv2R.value = 0.0;
+        StereoUniforms.uCameraDirFromCenter.value.set(0, 0, 1);
         StereoUniforms.uSphereBasis.value.identity();
     }
+
     StereoUniforms.uProjectionStrength.value = useProjection ? 1.0 : 0.0;
     StereoUniforms.uCullBackfaces.value = useCull ? 1.0 : 0.0;
 
@@ -1148,29 +1961,6 @@ view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
         }
     }
 
-    if (PerformancePanel.element) {
-        const frameDuration = performance.now() - frameStart;
-        PerformancePanel.accumTime += frameDuration;
-        PerformancePanel.frameCount++;
-        if (PerformancePanel.frameLabel) {
-            PerformancePanel.frameLabel.textContent = frameDuration.toFixed(1);
-        }
-        if (PerformancePanel.linesLabel) {
-            PerformancePanel.linesLabel.textContent = RoadFatLines.size.toString();
-        }
-        const now = performance.now();
-        const elapsed = now - PerformancePanel.lastUpdate;
-        if (elapsed >= 500) {
-            const avgFrame = PerformancePanel.accumTime / Math.max(PerformancePanel.frameCount, 1);
-            const fps = 1000 / Math.max(avgFrame, 1e-6);
-            if (PerformancePanel.fpsLabel) {
-                PerformancePanel.fpsLabel.textContent = fps.toFixed(1);
-            }
-            PerformancePanel.lastUpdate = now;
-            PerformancePanel.frameCount = 0;
-            PerformancePanel.accumTime = 0;
-        }
-    }
 });
 
 // ----------------------------------------------------------------------------
@@ -1208,49 +1998,47 @@ function triggerUpdate() {
 }
 
 function createRoadsUI() {
+    ensureUIPanelStyles();
     const panel = document.createElement('div');
-    Object.assign(panel.style, {
-        position: 'absolute', right: '10px', top: '10px', zIndex: 100,
-        background: '#222222ee', border: '1px solid #444', borderRadius: '8px',
-        padding: '15px', color: '#fff', fontFamily: 'sans-serif', fontSize: '13px',
-        minWidth: '260px', display: 'flex', flexDirection: 'column', gap: '12px'
-    });
+    applyPanelStyle(panel, { right: '10px', top: '10px' });
+    panel.classList.add('itowns-ui-panel');
 
+    const checkboxStyle = '';
     panel.innerHTML = `
-        <div style="font-weight:bold; font-size:14px; border-bottom:1px solid #555; padding-bottom:5px;">
+        <div style="font-weight:bold; font-size:14px; border-bottom:1px solid #4b5066; padding-bottom:5px;">
             Road Settings
         </div>
         
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Visibility</span>
-            <input type="checkbox" id="ui-visible" checked>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-visible" ${RoadGlobalState.visible ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Visibility</span>
         </label>
 
-        <!-- Always On Top Toggle -->
-        <label style="display:flex; justify-content:space-between; align-items:center; background:#333; padding:5px; border-radius:4px;">
-            <span>Always On Top (Ghost)</span>
-            <input type="checkbox" id="ui-ontop">
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-ontop" ${RoadGlobalState.depthTest ? '' : 'checked'} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Always On Top (Ghost)</span>
         </label>
 
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Stereographic Projection</span>
-            <input type="checkbox" id="ui-projection" ${RoadGlobalState.useProjection ? 'checked' : ''}>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-projection" ${RoadGlobalState.useProjection ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Stereographic Projection</span>
         </label>
 
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Cull Backfaces (Sphere)</span>
-            <input type="checkbox" id="ui-cull" ${RoadGlobalState.cullBackfaces ? 'checked' : ''}>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-cull" ${RoadGlobalState.cullBackfaces ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Cull Backfaces (Sphere)</span>
         </label>
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Disable Frustum Culling</span>
-            <input type="checkbox" id="ui-nocull" ${RoadGlobalState.disableFrustumCulling ? 'checked' : ''}>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-nocull" ${RoadGlobalState.disableFrustumCulling ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Disable Frustum Culling</span>
         </label>
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Per-Road Widths</span>
-            <input type="checkbox" id="ui-widths" ${RoadGlobalState.useIndividualWidths ? 'checked' : ''}>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-widths" ${RoadGlobalState.useIndividualWidths ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Per-Road Widths</span>
         </label>
 
-        <div style="display:flex; flex-direction:column; gap:5px;">
+
+        <div style="display:flex; flex-direction:column; gap:4px;">
             <div style="display:flex; justify-content:space-between;">
                 <span>Width Multiplier</span>
                 <span id="ui-width-val">${RoadGlobalState.widthMultiplier.toFixed(1)}x</span>
@@ -1258,7 +2046,7 @@ function createRoadsUI() {
             <input type="range" id="ui-width" min="0.1" max="5" step="0.1" value="${RoadGlobalState.widthMultiplier}">
         </div>
 
-        <div style="display:flex; flex-direction:column; gap:5px;">
+        <div style="display:flex; flex-direction:column; gap:4px;">
             <div style="display:flex; justify-content:space-between;">
                 <span>Elevation Offset</span>
                 <span id="ui-alt-val">${RoadGlobalState.altitudeOffset.toFixed(1)} m</span>
@@ -1266,75 +2054,116 @@ function createRoadsUI() {
             <input type="range" id="ui-alt" min="-50" max="50" step="0.5" value="${RoadGlobalState.altitudeOffset}">
         </div>
 
-        <label style="display:flex; justify-content:space-between; align-items:center;">
-            <span>World Units (Meters)</span>
-            <input type="checkbox" id="ui-worldunits">
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-worldunits" ${RoadGlobalState.useWorldUnits ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">World Units (Meters)</span>
         </label>
         
-        <button id="ui-debug" style="margin-top:5px; padding:4px; background:#444; border:none; color:#ccc; cursor:pointer;">Debug Console</button>
+        <!--
+        <button id="ui-debug" style="${UI_BUTTON_STYLE}width:100%;text-align:center;margin-top:6px;">Debug Console</button>
+        -->
     `;
     document.body.appendChild(panel);
 
+    const visibleInput = document.getElementById('ui-visible');
+    const ghostInput = document.getElementById('ui-ontop');
+    const projectionInput = document.getElementById('ui-projection');
+    const cullInput = document.getElementById('ui-cull');
+    const noCullInput = document.getElementById('ui-nocull');
+    const widthsInput = document.getElementById('ui-widths');
+    const widthSlider = document.getElementById('ui-width');
+    const widthLabel = document.getElementById('ui-width-val');
+    const altSlider = document.getElementById('ui-alt');
+    const altLabel = document.getElementById('ui-alt-val');
+    const worldUnitsInput = document.getElementById('ui-worldunits');
+
+    visibleInput.checked = RoadGlobalState.visible;
+    ghostInput.checked = !RoadGlobalState.depthTest;
+    projectionInput.checked = RoadGlobalState.useProjection;
+    cullInput.checked = RoadGlobalState.cullBackfaces;
+    noCullInput.checked = RoadGlobalState.disableFrustumCulling;
+    widthsInput.checked = RoadGlobalState.useIndividualWidths;
+    widthSlider.value = RoadGlobalState.widthMultiplier;
+    widthLabel.innerText = RoadGlobalState.widthMultiplier.toFixed(1) + 'x';
+    altSlider.value = RoadGlobalState.altitudeOffset;
+    altLabel.innerText = RoadGlobalState.altitudeOffset.toFixed(1) + ' m';
+    worldUnitsInput.checked = RoadGlobalState.useWorldUnits;
+
+    for (const layer of roadLayers) {
+        layer.object3d.visible = RoadGlobalState.visible;
+    }
+
     // Events
-    document.getElementById('ui-visible').addEventListener('change', (e) => {
+    visibleInput.addEventListener('change', (e) => {
+        RoadGlobalState.visible = e.target.checked;
         for (const layer of roadLayers) {
-            layer.object3d.visible = e.target.checked;
+            layer.object3d.visible = RoadGlobalState.visible;
         }
+        RoadUIStorage.save({ visible: RoadGlobalState.visible });
         notifyRoadLayers();
     });
 
-    document.getElementById('ui-ontop').addEventListener('change', (e) => {
-        // Logic: Checked = Always On Top -> depthTest = false (Mode Switch)
+    ghostInput.addEventListener('change', (e) => {
         RoadGlobalState.depthTest = !e.target.checked;
+        RoadUIStorage.save({ depthTest: RoadGlobalState.depthTest });
         triggerUpdate();
     });
 
-    document.getElementById('ui-projection').addEventListener('change', (e) => {
+    projectionInput.addEventListener('change', (e) => {
         RoadGlobalState.useProjection = e.target.checked;
+        RoadUIStorage.save({ useProjection: RoadGlobalState.useProjection });
         triggerUpdate();
     });
 
-    document.getElementById('ui-cull').addEventListener('change', (e) => {
+    cullInput.addEventListener('change', (e) => {
         RoadGlobalState.cullBackfaces = e.target.checked;
+        RoadUIStorage.save({ cullBackfaces: RoadGlobalState.cullBackfaces });
         notifyRoadLayers();
     });
-    document.getElementById('ui-nocull').addEventListener('change', (e) => {
+
+    noCullInput.addEventListener('change', (e) => {
         RoadGlobalState.disableFrustumCulling = e.target.checked;
+        RoadUIStorage.save({ disableFrustumCulling: RoadGlobalState.disableFrustumCulling });
         applyFrustumCullingState();
     });
-    document.getElementById('ui-widths').addEventListener('change', (e) => {
+
+    widthsInput.addEventListener('change', (e) => {
         RoadGlobalState.useIndividualWidths = e.target.checked;
+        RoadUIStorage.save({ useIndividualWidths: RoadGlobalState.useIndividualWidths });
         rebuildAllRoadTiles();
         applyGlobalStateToMaterials();
     });
 
-    document.getElementById('ui-width').addEventListener('input', (e) => {
+    widthSlider.addEventListener('input', (e) => {
         const v = parseFloat(e.target.value);
-        document.getElementById('ui-width-val').innerText = v.toFixed(1) + 'x';
+        widthLabel.innerText = v.toFixed(1) + 'x';
         RoadGlobalState.widthMultiplier = v;
+        RoadUIStorage.save({ widthMultiplier: RoadGlobalState.widthMultiplier });
         triggerUpdate();
     });
 
-    document.getElementById('ui-alt').addEventListener('input', (e) => {
+    altSlider.addEventListener('input', (e) => {
         const v = parseFloat(e.target.value);
-        document.getElementById('ui-alt-val').innerText = v.toFixed(1) + ' m';
+        altLabel.innerText = v.toFixed(1) + ' m';
         RoadGlobalState.altitudeOffset = v;
-        triggerUpdate();
+        RoadUIStorage.save({ altitudeOffset: RoadGlobalState.altitudeOffset });
+        rebuildAllRoadTiles();
     });
 
-    document.getElementById('ui-worldunits').addEventListener('change', (e) => {
+    worldUnitsInput.addEventListener('change', (e) => {
         RoadGlobalState.useWorldUnits = e.target.checked;
+        RoadUIStorage.save({ useWorldUnits: RoadGlobalState.useWorldUnits });
         triggerUpdate();
     });
 
-    document.getElementById('ui-debug').addEventListener('click', () => {
-        let count = 0;
-        for (const layer of roadLayers) {
-            layer.object3d.traverse(o => { if (o.userData?.isFatLine) count++; });
-        }
-        RoadFatLineRoot.traverse(o => { if (o.userData?.isFatLine) count++; });
-        console.log(`Visible Fat Lines: ${count}`);
-    });
+    // document.getElementById('ui-debug').addEventListener('click', () => {
+    //     let count = 0;
+    //     for (const layer of roadLayers) {
+    //         layer.object3d.traverse(o => { if (o.userData?.isFatLine) count++; });
+    //     }
+    //     RoadFatLineRoot.traverse(o => { if (o.userData?.isFatLine) count++; });
+    //     console.log(`Visible Fat Lines: ${count}`);
+    // });
 }
 function updateSphereBasisUniform() {
     const sphereCtl = SphereProjectionState.controller;
