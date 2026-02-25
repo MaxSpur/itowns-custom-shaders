@@ -1,10 +1,10 @@
 # CODEX_MEMO
 
 ## CURRENT_TASK
-Improve projected line-thickness behavior in `World Units` mode.
+Fix projection widget visual consistency bug.
 
 ## CURRENT_SUBTASK
-Add a toggle to keep projected geometry while computing world-unit thickness from original (pre-projection) camera distance.
+Ensure cone opacity always follows the Projection Controls opacity slider when switching sphere/cone modes.
 
 ## SESSION INSIGHTS
 - `main.js` is now a thin orchestrator that wires modules.
@@ -84,6 +84,10 @@ Add a toggle to keep projected geometry while computing world-unit thickness fro
   - projected positions still drive line placement on sphere/cone,
   - optional per-segment width scaling uses the ratio `projectedDepth/originalDepth` to preserve original-distance perspective feel,
   - exposed in UI as `Projected Width Uses Source Distance` and synced per-frame via `StereoUniforms.uUseSourceDistanceForWorldUnits`.
+- Cone-opacity regression fix:
+  - Root cause: clamp/cone debug mesh is attached after initial `setOpacity`, so it kept its own material default.
+  - `makeSphereController` now stores `visualOpacity` and reapplies it both in `setOpacity` and immediately in `attachClampCylinder`.
+  - Opacity application is now centralized via `applyOpacityToMaterial(...)` (handles single or array materials, marks `needsUpdate`).
 
 ## Problems / TO DO
 - Consolidate duplicated road/shader code across many `main-*.js` files into shared modules (source setup, fat-line conversion, shader patching, UI state).

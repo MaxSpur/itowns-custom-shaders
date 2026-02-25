@@ -92,6 +92,23 @@ function makeSphereController(view, {
 
     // external clamp/diagnostic cylinder (the green one from addClampDebugCylinder)
     let externalClampCylinder = null;
+    let visualOpacity = THREE.MathUtils.clamp(+opacity || 0.5, 0, 1);
+
+    function applyOpacityToMaterial(material, alpha) {
+        if (!material) return;
+        if (Array.isArray(material)) {
+            for (const mat of material) {
+                if (!mat) continue;
+                mat.transparent = true;
+                mat.opacity = alpha;
+                mat.needsUpdate = true;
+            }
+            return;
+        }
+        material.transparent = true;
+        material.opacity = alpha;
+        material.needsUpdate = true;
+    }
 
     logSphere('init controller', { radius, offset01, opacity, color });
 
@@ -100,7 +117,7 @@ function makeSphereController(view, {
     const sphereMat = new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity,
+        opacity: visualOpacity,
         depthWrite: false,
         side: THREE.DoubleSide,
     });
@@ -291,11 +308,12 @@ function makeSphereController(view, {
         },
         setOpacity(a) {
             const clamped = Math.min(1, Math.max(0, +a));
-            sphereMat.opacity = clamped;
+            visualOpacity = clamped;
+            applyOpacityToMaterial(sphereMat, visualOpacity);
             // coneMat.opacity = clamped;
             // change the opactity of the external cylinder too
             if (externalClampCylinder && externalClampCylinder.material) {
-                externalClampCylinder.material.opacity = clamped;
+                applyOpacityToMaterial(externalClampCylinder.material, visualOpacity);
             }
             logSphere('setOpacity', clamped);
             view.notifyChange(true);
@@ -341,6 +359,7 @@ function makeSphereController(view, {
             if (externalClampCylinder) {
                 externalClampCylinder.frustumCulled = false;
                 externalClampCylinder.visible = (displayMode === 'cone');
+                applyOpacityToMaterial(externalClampCylinder.material, visualOpacity);
             }
             // Re-apply transform so it jumps to the current ground point
             updateTransform();
