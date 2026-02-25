@@ -57,6 +57,7 @@ function createPathListRow(path, gpxPathsManager) {
 export function createRoadsUI({
     roadLayers,
     notifyRoadLayers,
+    setRoadVisibility,
     triggerUpdate,
     applyFrustumCullingState,
     rebuildAllRoadTiles,
@@ -207,9 +208,21 @@ export function createRoadsUI({
     pathWidthLabel.innerText = RoadGlobalState.pathsWidthMultiplier.toFixed(1) + 'x';
     pathProjectionInput.checked = RoadGlobalState.pathsUseProjection;
 
-    for (const layer of roadLayers) {
-        layer.object3d.visible = RoadGlobalState.visible;
-    }
+    const syncRoadVisibility = () => {
+        if (typeof setRoadVisibility === 'function') {
+            setRoadVisibility(RoadGlobalState.visible);
+            return;
+        }
+
+        for (const layer of roadLayers) {
+            layer.object3d.visible = RoadGlobalState.visible;
+        }
+        if (typeof notifyRoadLayers === 'function') {
+            notifyRoadLayers();
+        }
+    };
+
+    syncRoadVisibility();
 
     if (gpxPathsManager?.subscribe) {
         gpxPathsManager.subscribe((paths) => {
@@ -221,11 +234,8 @@ export function createRoadsUI({
 
     visibleInput.addEventListener('change', (e) => {
         RoadGlobalState.visible = e.target.checked;
-        for (const layer of roadLayers) {
-            layer.object3d.visible = RoadGlobalState.visible;
-        }
         RoadUIStorage.save({ visible: RoadGlobalState.visible });
-        notifyRoadLayers();
+        syncRoadVisibility();
     });
 
     ghostInput.addEventListener('change', (e) => {

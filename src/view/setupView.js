@@ -4,7 +4,7 @@ import * as THREE from 'three';
 export function setupView() {
     const viewerDiv = document.getElementById('viewerDiv');
     const placement = {
-        coord: new itowns.Coordinates('EPSG:4326', 4.768, 45.537),
+        coord: new itowns.Coordinates('EPSG:4326', 2.437, 48.846),
         range: 5000,
         tilt: 80,
         heading: 0,

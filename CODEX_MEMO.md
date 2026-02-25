@@ -1,10 +1,10 @@
 # CODEX_MEMO
 
 ## CURRENT_TASK
-Add GPX drag-drop import and persistent path controls integrated into the existing road fat-line pipeline/UI.
+Polish map defaults and road controls after GPX integration.
 
 ## CURRENT_SUBTASK
-GPX drag-drop import + persistent path list + integrated path controls completed and validated.
+Set default globe center to Vincennes and fix the Roads `Visibility` toggle to hide/show all road vectors.
 
 ## SESSION INSIGHTS
 - `main.js` is now a thin orchestrator that wires modules.
@@ -74,6 +74,11 @@ GPX drag-drop import + persistent path list + integrated path controls completed
   - scrollable persistent list with per-path visibility toggle and delete button,
   - drag-and-drop import hint.
 - `RoadGlobalState` now persists and restores `pathsWidthMultiplier` and `pathsUseProjection`.
+- Default map placement is now near Vincennes/Paris (`EPSG:4326` lon `2.437`, lat `48.846`) in [setupView.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/view/setupView.js).
+- Roads `Visibility` now controls the actual fat-line output (tile anchors + layer visibility), not just the source layer object:
+  - `src/roads/fatLinePipeline.js`: added `applyRoadVisibilityState`.
+  - `src/roads/pipeline/tileLifecycle.js`: new anchors inherit `RoadGlobalState.visible` on creation.
+  - `src/roads/renderer.js` + `src/roads/ui.js`: UI toggle now calls pipeline visibility API and applies persisted state on init.
 
 ## Problems / TO DO
 - Consolidate duplicated road/shader code across many `main-*.js` files into shared modules (source setup, fat-line conversion, shader patching, UI state).

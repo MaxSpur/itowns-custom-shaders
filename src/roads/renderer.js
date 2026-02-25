@@ -32,12 +32,14 @@ export function initRoadRenderer(view, roadFatLineRoot) {
         createRoadsUI({
             roadLayers,
             notifyRoadLayers: pipeline.notifyRoadLayers,
+            setRoadVisibility: pipeline.applyRoadVisibilityState,
             triggerUpdate,
             applyFrustumCullingState,
             rebuildAllRoadTiles,
             applyGlobalStateToMaterials: pipeline.applyGlobalStateToMaterials,
             gpxPathsManager: gpxPaths,
         });
+        pipeline.applyRoadVisibilityState();
         applyFrustumCullingState();
         triggerUpdate();
     });

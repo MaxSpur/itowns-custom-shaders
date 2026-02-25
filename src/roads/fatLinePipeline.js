@@ -51,6 +51,22 @@ export function createRoadPipeline(view, roadFatLineRoot, roadLayers) {
         });
     }
 
+    function applyRoadVisibilityState(visible = RoadGlobalState.visible) {
+        const isVisible = !!visible;
+        for (const layer of roadLayers) {
+            if (layer?.object3d) {
+                layer.object3d.visible = isVisible;
+            }
+        }
+        for (const entry of roadTileAnchors.values()) {
+            if (entry?.anchor) {
+                entry.anchor.visible = isVisible;
+            }
+        }
+        notifyRoadLayers();
+        view.notifyChange(true);
+    }
+
     function triggerUpdate() {
         applyGlobalStateToMaterials();
     }
@@ -61,6 +77,7 @@ export function createRoadPipeline(view, roadFatLineRoot, roadLayers) {
         scheduleRoadProcessing: tileLifecycle.scheduleRoadProcessing,
         rebuildAllRoadTiles: tileLifecycle.rebuildAllRoadTiles,
         applyFrustumCullingState: tileLifecycle.applyFrustumCullingState,
+        applyRoadVisibilityState,
         triggerUpdate,
         applyGlobalStateToMaterials,
         syncMaterialResolutions: materialManager.syncMaterialResolutions,

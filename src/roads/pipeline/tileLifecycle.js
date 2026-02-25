@@ -81,6 +81,7 @@ export function createRoadTileLifecycle({
         anchor.matrix.decompose(anchor.position, anchor.quaternion, anchor.scale);
         anchor.updateMatrix();
         anchor.frustumCulled = !RoadGlobalState.disableFrustumCulling;
+        anchor.visible = !!RoadGlobalState.visible;
         anchor.userData.isRoadAnchor = true;
 
         roadFatLineRoot.add(anchor);
