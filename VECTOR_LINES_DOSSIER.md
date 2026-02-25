@@ -1,33 +1,33 @@
-# Standalone Guide: Vector Rendering in iTowns
+# Standalone Guide: Efficient Vector Fat Lines in iTowns
 
 ## Purpose
-This document is a standalone recipe for loading and rendering vector lines in iTowns with:
-- reliable terrain draping,
-- high-quality "fat lines" (thick lines),
-- variable vs fixed line thickness,
-- perspective-aware thickness,
-- optional custom shader deformation.
+Use this guide to build a reusable vector-line pipeline for iTowns that supports:
+- terrain-draped vectors,
+- high-quality thick lines (`LineSegments2`),
+- variable/fixed/perspective thickness,
+- many distinct colors (including per-path GPX colors),
+- optional custom shader deformation,
+- stable long-session behavior (bounded processing retries + cleanup disposal).
 
-You can copy these patterns into another iTowns project without needing any other file.
+This document is self-contained and can be ported to another project directly.
 
-## What You Build
-1. A `GlobeView`.
-2. A vector layer (`FeatureGeometryLayer`) sourced from WFS (or file).
-3. A conversion pipeline from iTowns default line geometry to `LineSegments2` fat lines.
-4. A render state model supporting:
-   - variable widths by feature class,
-   - fixed uniform width,
-   - screen-space thickness,
-   - world-space/perspective thickness.
-5. A shader hook (`onBeforeCompile`) for custom projection or warping.
+## Target Architecture
+Use five logical modules (file names are up to you):
+1. `state`: global toggles and width rules.
+2. `layer`: source + `FeatureGeometryLayer` setup.
+3. `geometry`: extract/group line segments and ensure color attributes exist.
+4. `materials`: material cache and shared material state updates.
+5. `lifecycle`: tile/feature queueing, creation, cleanup, rebuild, frustum state.
+
+Optional:
+- `frameSync`: per-frame resolution/uniform/anchor sync.
+- `projectionShader`: custom `onBeforeCompile` hook.
 
 ## Dependencies
 
 ```bash
 npm install itowns three
 ```
-
-Import these in your app:
 
 ```js
 import * as itowns from 'itowns';
@@ -37,86 +37,54 @@ import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 ```
 
-## 1) Core State Model
-
-This state is enough to control most line rendering behavior:
+## 1) State Model
 
 ```js
-const LineRenderState = {
+const LineState = {
   visible: true,
   widthMultiplier: 1.0,
-  useIndividualWidths: true, // variable widths by feature class
-  useWorldUnits: false,      // false=pixel-like, true=meters/perspective
-  depthTest: true,           // true=normal depth, false=always-on-top style
-  altitudeOffset: 0.0,       // meters above terrain
+  useIndividualWidths: true, // true: per-feature/per-class widths
+  useWorldUnits: false,      // false: screen-like width, true: meters/perspective
+  depthTest: true,           // false: ghost/always-on-top style
+  altitudeOffset: 0.0,
+  disableFrustumCulling: false,
   resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
 };
 ```
 
-Feature-class width mapping example:
+Example width defaults:
 
 ```js
-const BASE_WIDTH_BY_CLASS = {
+const BASE_WIDTH = {
   motorway: 10,
   trunk: 8,
   primary: 6,
   secondary: 5,
-  tertiary: 4,
-  residential: 2.5,
+  residential: 3,
   path: 1.5,
 };
 
-function getFeatureClass(props) {
+function classFromProps(props = {}) {
   return props.highway || props.class || 'residential';
 }
 ```
 
-## 2) View Setup (Minimal)
+## 2) Globe + Data Layer
 
 ```js
 const viewerDiv = document.getElementById('viewerDiv');
-const placement = {
-  coord: new itowns.Coordinates('EPSG:4326', 2.35, 48.85, 0),
+const view = new itowns.GlobeView(viewerDiv, {
+  coord: new itowns.Coordinates('EPSG:4326', 2.35, 48.85),
   range: 15000,
   tilt: 60,
   heading: 0,
-};
-const view = new itowns.GlobeView(viewerDiv, placement);
+});
 ```
 
-Optional imagery/elevation:
+Vector source example (WFS):
 
 ```js
-const ortho = new itowns.ColorLayer('Ortho', {
-  source: new itowns.WMTSSource({
-    url: 'https://data.geopf.fr/wmts?',
-    crs: 'EPSG:3857',
-    name: 'ORTHOIMAGERY.ORTHOPHOTOS',
-    tileMatrixSet: 'PM',
-    format: 'image/jpeg',
-  }),
-});
-view.addLayer(ortho);
-
-const dem = new itowns.ElevationLayer('DEM', {
-  source: new itowns.WMTSSource({
-    url: 'https://data.geopf.fr/wmts?',
-    crs: 'EPSG:4326',
-    name: 'ELEVATION.ELEVATIONGRIDCOVERAGE.SRTM3',
-    tileMatrixSet: 'WGS84G',
-    format: 'image/x-bil;bits=32',
-    zoom: { min: 2, max: 14 },
-  }),
-});
-view.addLayer(dem);
-```
-
-## 3) Vector Source + Feature Layer
-
-WFS example:
-
-```js
-const roadsSource = new itowns.WFSSource({
+const source = new itowns.WFSSource({
   url: 'https://data.geopf.fr/wfs/ows?',
   version: '2.0.0',
   typeName: 'BDTOPO_V3:troncon_de_route',
@@ -126,18 +94,7 @@ const roadsSource = new itowns.WFSSource({
 });
 ```
 
-Local GeoJSON alternative:
-
-```js
-const roadsSource = new itowns.FileSource({
-  url: '/data/roads.geojson',
-  crs: 'EPSG:4326',
-  fetcher: itowns.Fetcher.json,
-  parser: itowns.GeoJsonParser.parse,
-});
-```
-
-Batch IDs are important for per-feature width recovery:
+### Stable `batchId` registry (needed for robust per-feature widths)
 
 ```js
 const Registry = {
@@ -146,82 +103,102 @@ const Registry = {
   nextBatchId: 0,
 };
 
-function getFeatureKey(props = {}) {
+function featureKey(props = {}) {
   return props.id || props.ID || props.gid || props.pk || null;
 }
 
 function registerFeature(props = {}) {
-  const key = getFeatureKey(props);
-  let batchId = Registry.nextBatchId++;
+  const key = featureKey(props);
+  let batchId;
+
   if (key && Registry.keyToBatchId.has(key)) {
     batchId = Registry.keyToBatchId.get(key);
-  } else if (key) {
-    Registry.keyToBatchId.set(key, batchId);
+  } else {
+    batchId = Registry.nextBatchId++;
+    if (key) Registry.keyToBatchId.set(key, batchId);
   }
 
-  const klass = getFeatureClass(props);
-  Registry.widthByBatchId.set(batchId, BASE_WIDTH_BY_CLASS[klass] ?? 2);
+  const klass = classFromProps(props);
+  Registry.widthByBatchId.set(batchId, BASE_WIDTH[klass] ?? 2);
   return batchId;
 }
 ```
 
-Terrain draping helper:
+### DEM draping helper
 
 ```js
-const tempCoord = new itowns.Coordinates('EPSG:4326', 0, 0, 0);
-const demReadMode =
-  (itowns.DEMUtils && (itowns.DEMUtils.PRECISE_READ_Z || itowns.DEMUtils.FAST_READ_Z)) || 0;
+const tmpCoord = new itowns.Coordinates('EPSG:4326', 0, 0, 0);
+const demMode = (itowns.DEMUtils && (itowns.DEMUtils.PRECISE_READ_Z || itowns.DEMUtils.FAST_READ_Z)) || 0;
 
-function baseAltitudeFromDEM(props, ctx, view) {
+function baseAltitudeFromDEM(ctx, view) {
   const c = Array.isArray(ctx?.coordinates) ? ctx.coordinates[0] : ctx?.coordinates;
   if (!c) return 0;
+
   const coord = c.isCoordinates
     ? c
     : new itowns.Coordinates(c.crs || 'EPSG:4326', c.x, c.y, c.z || 0);
 
   if (!itowns.DEMUtils || !view.tileLayer) return coord.z || 0;
-  tempCoord.copy(coord);
-  const z = itowns.DEMUtils.getElevationValueAt(view.tileLayer, tempCoord, demReadMode);
+
+  tmpCoord.copy(coord);
+  const z = itowns.DEMUtils.getElevationValueAt(view.tileLayer, tmpCoord, demMode);
   return Number.isFinite(z) ? z : (coord.z || 0);
 }
 ```
 
-Layer creation:
+Layer:
 
 ```js
 const roadsLayer = new itowns.FeatureGeometryLayer('Roads', {
-  source: roadsSource,
+  source,
   mergeFeatures: true,
   batchId: (props) => registerFeature(props),
   style: {
     stroke: {
-      color: (props) => (getFeatureClass(props) === 'motorway' ? '#2e86ff' : '#f7c948'),
-      base_altitude: (props, ctx) => baseAltitudeFromDEM(props, ctx, view),
+      color: (props) => {
+        const klass = classFromProps(props);
+        return klass === 'motorway' ? '#2e86ff' : '#f7c948';
+      },
+      base_altitude: (props, ctx) => baseAltitudeFromDEM(ctx, view),
     },
   },
 });
 ```
 
-## 4) Fat-Line Conversion Pipeline
+## 3) Core Improvement: Vertex-Color-First Pipeline
 
-### Why convert?
-iTowns default line rendering is usually not enough for robust thick-line cartography.  
-`LineSegments2` + `LineMaterial` gives controllable thick lines.
+### Why this matters
+If you plan GPX visualization with one color per path, one material per color does not scale.
 
-### Runtime containers
+Best practice:
+- keep `vertexColors: true` on line materials,
+- put actual colors in geometry attributes,
+- reuse materials by render state (width/depth/worldUnits), not by color.
+
+This keeps visible output identical while drastically reducing material growth.
+
+## 4) Fat-Line Containers
 
 ```js
-const fatLineRoot = new THREE.Group();
-fatLineRoot.name = 'FatLineRoot';
-view.scene.add(fatLineRoot);
+const fatRoot = new THREE.Group();
+fatRoot.name = 'FatLineRoot';
+fatRoot.frustumCulled = false;
+view.scene.add(fatRoot);
 
 const FatLines = new Set();
+const TileAnchors = new Map();
 const MaterialCache = new Map();
 ```
 
-### Geometry sanitation helpers
+## 5) Geometry Extraction and Grouping
+
+### Segment extraction (always produce positions + colors)
 
 ```js
+const vA = new THREE.Vector3();
+const vB = new THREE.Vector3();
+const fallbackColor = new THREE.Color();
+
 function finite3(x, y, z) {
   return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z);
 }
@@ -229,24 +206,22 @@ function finite3(x, y, z) {
 function nearOrigin(x, y, z) {
   return Math.abs(x) < 1 && Math.abs(y) < 1 && Math.abs(z) < 1;
 }
-```
 
-### Group source geometry by batchId
-
-```js
-const vA = new THREE.Vector3();
-const vB = new THREE.Vector3();
-
-function segmentsByBatch(sourceGeom, transformMatrix) {
+function segmentsByBatch(sourceGeom, transformMatrix, fallbackHex) {
   const pos = sourceGeom?.attributes?.position;
   const col = sourceGeom?.attributes?.color;
   const batch = sourceGeom?.attributes?.batchId;
   const index = sourceGeom?.index;
   if (!pos) return [];
 
-  const groups = new Map();
+  fallbackColor.set(fallbackHex || '#ffffff');
+  const fr = fallbackColor.r;
+  const fg = fallbackColor.g;
+  const fb = fallbackColor.b;
+
   const hasBatch = !!batch;
-  const hasColor = !!col;
+  const hasColorAttr = !!col;
+  const groups = new Map();
 
   const getGroup = (batchId) => {
     const key = hasBatch ? batchId : 0;
@@ -260,20 +235,24 @@ function segmentsByBatch(sourceGeom, transformMatrix) {
     if (!finite3(ax, ay, az) || !finite3(bx, by, bz)) return;
     if (nearOrigin(ax, ay, az) && nearOrigin(bx, by, bz)) return;
 
-    const g = getGroup(hasBatch ? batch.getX(a) : 0);
+    const group = getGroup(hasBatch ? batch.getX(a) : 0);
+
     if (transformMatrix) {
       vA.set(ax, ay, az).applyMatrix4(transformMatrix);
       vB.set(bx, by, bz).applyMatrix4(transformMatrix);
-      g.positions.push(vA.x, vA.y, vA.z, vB.x, vB.y, vB.z);
+      group.positions.push(vA.x, vA.y, vA.z, vB.x, vB.y, vB.z);
     } else {
-      g.positions.push(ax, ay, az, bx, by, bz);
+      group.positions.push(ax, ay, az, bx, by, bz);
     }
 
-    if (hasColor) {
-      g.colors.push(
+    if (hasColorAttr) {
+      group.colors.push(
         col.getX(a), col.getY(a), col.getZ(a),
         col.getX(b), col.getY(b), col.getZ(b),
       );
+    } else {
+      // Fallback color injection keeps vertex-color path consistent.
+      group.colors.push(fr, fg, fb, fr, fg, fb);
     }
   };
 
@@ -289,93 +268,153 @@ function segmentsByBatch(sourceGeom, transformMatrix) {
     out.push({
       batchId: hasBatch ? batchId : null,
       positions: g.positions,
-      colors: hasColor && g.colors.length === g.positions.length ? g.colors : null,
-      hasColors: hasColor && g.colors.length === g.positions.length,
+      colors: g.colors,
+      hasColors: g.colors.length === g.positions.length,
     });
   }
   return out;
 }
 ```
 
-### Create/reuse material
+### Group by width (not by color)
 
 ```js
-function getFatLineMaterial({ baseWidth, colorHex, hasColors }) {
-  const key = `${baseWidth}|${colorHex}|${hasColors ? 1 : 0}`;
+function widthForChunk(chunk, props) {
+  if (!LineState.useIndividualWidths) return 2;
+  if (chunk.batchId != null) return Registry.widthByBatchId.get(chunk.batchId) ?? 2;
+  return BASE_WIDTH[classFromProps(props)] ?? 2;
+}
+
+function addChunksToGroups(groups, chunks, props) {
+  for (const c of chunks) {
+    const baseWidth = widthForChunk(c, props);
+    const key = `width|${baseWidth}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        baseWidth,
+        positions: [],
+        colors: [],
+        hasColors: true,
+      });
+    }
+
+    const g = groups.get(key);
+    g.positions.push(...c.positions);
+    if (g.hasColors && c.hasColors && c.colors) {
+      g.colors.push(...c.colors);
+    } else {
+      g.hasColors = false;
+      g.colors.length = 0;
+    }
+  }
+}
+```
+
+## 6) Material Manager (Render-State-Keyed)
+
+```js
+function materialKey({ baseWidth, hasColors, depthTest, worldUnits }) {
+  // No color in key when vertex colors are used.
+  return `${baseWidth}|${hasColors ? 1 : 0}|${depthTest ? 1 : 0}|${worldUnits ? 1 : 0}`;
+}
+
+function getLineMaterial({ baseWidth, hasColors, fallbackColorHex = 0xffffff }) {
+  const key = materialKey({
+    baseWidth,
+    hasColors,
+    depthTest: LineState.depthTest,
+    worldUnits: LineState.useWorldUnits,
+  });
   if (MaterialCache.has(key)) return MaterialCache.get(key);
 
   const mat = new LineMaterial({
-    color: hasColors ? 0xffffff : colorHex,
+    color: hasColors ? 0xffffff : fallbackColorHex,
     vertexColors: hasColors,
-    linewidth: baseWidth * LineRenderState.widthMultiplier,
-    worldUnits: LineRenderState.useWorldUnits,
-    depthTest: LineRenderState.depthTest,
-    depthWrite: LineRenderState.depthTest,
-    transparent: !LineRenderState.depthTest,
-    resolution: LineRenderState.resolution,
+    linewidth: baseWidth * LineState.widthMultiplier,
+    worldUnits: LineState.useWorldUnits,
+    depthTest: LineState.depthTest,
+    depthWrite: LineState.depthTest,
+    transparent: !LineState.depthTest,
+    resolution: LineState.resolution,
+    dashed: false,
+    alphaToCoverage: false,
+    polygonOffset: LineState.depthTest,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
   });
 
-  mat.userData = mat.userData || {};
   mat.userData.baseWidth = baseWidth;
-
   MaterialCache.set(key, mat);
   return mat;
 }
 ```
 
-### Process one created feature root
+## 7) Build Fat Lines for One Feature Root
 
 ```js
 const mTmp = new THREE.Matrix4();
 const invTarget = new THREE.Matrix4();
 
+function classColorHex(props) {
+  const klass = classFromProps(props);
+  return klass === 'motorway' ? '#2e86ff' : '#f7c948';
+}
+
+function featureProps(node) {
+  return node.userData?.feature?.properties || node.feature?.properties || {};
+}
+
 function processFeatureRoot(featureRoot) {
-  if (!featureRoot) return;
   const target = featureRoot.meshes || featureRoot;
   featureRoot.updateWorldMatrix(true, true);
   target.updateWorldMatrix(true, true);
 
+  const groups = new Map();
   invTarget.copy(target.matrixWorld).invert();
-  const grouped = [];
 
   target.traverse((node) => {
-    if (!(node.isMesh || node.isLine || node.isLineSegments)) return;
-    if (!node.geometry) return;
+    const isLineLike = node.isMesh || node.isLine || node.isLineSegments;
+    if (!isLineLike || !node.geometry || node.userData?.isFatLine || node.userData?.hasProcessedFatLine) return;
 
+    const props = featureProps(node);
     mTmp.copy(node.matrixWorld).premultiply(invTarget);
-    const chunks = segmentsByBatch(node.geometry, mTmp);
-    for (const c of chunks) {
-      const props = node.userData?.feature?.properties || {};
-      const klass = getFeatureClass(props);
-      const classColor = klass === 'motorway' ? 0x2e86ff : 0xf7c948;
-      const baseWidth = LineRenderState.useIndividualWidths
-        ? (Registry.widthByBatchId.get(c.batchId) ?? (BASE_WIDTH_BY_CLASS[klass] ?? 2))
-        : 2;
-
-      grouped.push({ ...c, baseWidth, color: classColor });
-    }
+    const chunks = segmentsByBatch(node.geometry, mTmp, classColorHex(props));
+    addChunksToGroups(groups, chunks, props);
 
     if (node.material) {
       if (Array.isArray(node.material)) node.material.forEach((m) => { if (m) m.visible = false; });
       else node.material.visible = false;
     }
+
+    node.userData.hasProcessedFatLine = true;
   });
 
-  for (const g of grouped) {
+  const anchor = new THREE.Group();
+  anchor.matrixAutoUpdate = false;
+  anchor.userData.isRoadAnchor = true;
+  fatRoot.add(anchor);
+
+  for (const g of groups.values()) {
+    if (!g.positions.length) continue;
+
     const geom = new LineSegmentsGeometry();
     geom.setPositions(g.positions);
-    if (g.hasColors && g.colors) geom.setColors(g.colors);
+    if (g.hasColors && g.colors.length === g.positions.length) {
+      geom.setColors(g.colors);
+    }
 
-    const mat = getFatLineMaterial({
+    const mat = getLineMaterial({
       baseWidth: g.baseWidth,
-      colorHex: g.color,
       hasColors: g.hasColors,
     });
 
     const fat = new LineSegments2(geom, mat);
+    fat.userData.isFatLine = true;
     fat.userData.baseWidth = g.baseWidth;
-    fat.position.set(0, 0, LineRenderState.altitudeOffset);
-    fatLineRoot.add(fat);
+    fat.frustumCulled = !LineState.disableFrustumCulling;
+    fat.position.set(0, 0, LineState.altitudeOffset);
+
+    anchor.add(fat);
     FatLines.add(fat);
   }
 
@@ -383,93 +422,123 @@ function processFeatureRoot(featureRoot) {
 }
 ```
 
-Connect to iTowns:
+## 8) Lifecycle Stability (Critical in Production)
+
+### Bounded queue retries (avoid infinite RAF loops)
 
 ```js
-roadsLayer.onMeshCreated = (root) => requestAnimationFrame(() => processFeatureRoot(root));
-view.addLayer(roadsLayer);
+const ATTACH_RETRY_MAX_ATTEMPTS = 300;
+const ATTACH_RETRY_MAX_WAIT_MS = 10000;
+
+function scheduleProcessing(root) {
+  if (!root) return;
+  root.userData = root.userData || {};
+  if (root.userData.hasQueuedFatLine) return;
+
+  root.userData.hasQueuedFatLine = true;
+  let attempts = 0;
+  const startedAt = performance.now();
+
+  const tick = () => {
+    if (!root?.userData?.hasQueuedFatLine) return;
+
+    if (root.parent) {
+      try {
+        processFeatureRoot(root);
+      } catch (err) {
+        root.userData.hasQueuedFatLine = false;
+        console.error('Failed to process feature root', err);
+      }
+      return;
+    }
+
+    attempts += 1;
+    if (attempts >= ATTACH_RETRY_MAX_ATTEMPTS || (performance.now() - startedAt) >= ATTACH_RETRY_MAX_WAIT_MS) {
+      root.userData.hasQueuedFatLine = false;
+      return;
+    }
+
+    requestAnimationFrame(tick);
+  };
+
+  requestAnimationFrame(tick);
+}
 ```
 
-Production note: when tiles update, add cleanup/dedup logic so old fat lines are removed and not duplicated.
+### Cleanup with geometry disposal
 
-## 5) Width Modes You Need
+```js
+function cleanupFatLine(line) {
+  if (!line) return;
+  if (line.parent) line.parent.remove(line);
+  if (line.geometry && typeof line.geometry.dispose === 'function') {
+    line.geometry.dispose();
+  }
+  FatLines.delete(line);
+}
+```
 
-### Variable width (by class/feature)
-- `LineRenderState.useIndividualWidths = true`
-- width is read from feature class mapping (or `batchId` registry)
+Call this in all removal/rebuild paths.
 
-### Fixed uniform width
-- `LineRenderState.useIndividualWidths = false`
-- one base width for all lines
-
-### Perspective-aware thickness
-- `LineRenderState.useWorldUnits = true`
-- thickness is in meters, so apparent width changes with camera distance
-
-### Fixed screen thickness
-- `LineRenderState.useWorldUnits = false`
-- thickness behaves like pixel width
-
-## 6) Keep Materials in Sync
-
-You must update line material `resolution` on resize, and optionally re-apply toggles:
+## 9) Frame Sync: Resolution + DPR Without Per-Frame Overhead
 
 ```js
 const rendererSize = new THREE.Vector2();
+let lastW = -1;
+let lastH = -1;
+let lastDPR = -1;
 
-function syncLineMaterials() {
+function syncPerFrame() {
   const renderer = view.mainLoop.gfxEngine.renderer;
-  renderer.getSize(rendererSize);
-  LineRenderState.resolution.copy(rendererSize);
+  const dpr = Number.isFinite(window.devicePixelRatio) ? window.devicePixelRatio : 1;
 
-  for (const mat of MaterialCache.values()) {
-    mat.resolution.copy(LineRenderState.resolution);
-    const base = mat.userData?.baseWidth ?? 2;
-    mat.linewidth = base * LineRenderState.widthMultiplier;
-    mat.worldUnits = LineRenderState.useWorldUnits;
-    mat.depthTest = LineRenderState.depthTest;
-    mat.depthWrite = LineRenderState.depthTest;
-    mat.transparent = !LineRenderState.depthTest;
-    mat.needsUpdate = true;
+  if (dpr !== lastDPR) {
+    renderer.setPixelRatio(dpr);
+    lastDPR = dpr;
+  }
+
+  renderer.getSize(rendererSize);
+  if (rendererSize.x !== lastW || rendererSize.y !== lastH) {
+    lastW = rendererSize.x;
+    lastH = rendererSize.y;
+    LineState.resolution.set(rendererSize.x, rendererSize.y);
+
+    for (const mat of MaterialCache.values()) {
+      mat.resolution.copy(LineState.resolution);
+    }
   }
 }
 
-view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, syncLineMaterials);
+view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, syncPerFrame);
 ```
 
-## 7) Shader Extension Pattern (General)
+## 10) Optional Shader Hook Pattern
 
-You do not need stereographic projection specifically.  
-The reusable idea is: patch line vertex positions in `onBeforeCompile`.
-
-Example: simple world-space warp by distance to a center.
+Use `onBeforeCompile` to warp/project line vertices while keeping the fat-line pipeline unchanged.
 
 ```js
-function patchLineShader(material, uniforms) {
-  if (material.userData?.shaderPatched) return material;
+function patchLineMaterial(material, uniforms) {
+  if (material.userData?.patched) return material;
 
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.uWarpCenter = uniforms.uWarpCenter;   // THREE.Vector3
-    shader.uniforms.uWarpRadius = uniforms.uWarpRadius;   // float
-    shader.uniforms.uWarpAmount = uniforms.uWarpAmount;   // float
+    shader.uniforms.uWarpCenter = uniforms.uWarpCenter;
+    shader.uniforms.uWarpRadius = uniforms.uWarpRadius;
 
     const inject = `
 uniform vec3 uWarpCenter;
 uniform float uWarpRadius;
-uniform float uWarpAmount;
-
-vec3 applyWarp(vec3 wp) {
+vec3 applyWarp(vec3 wp){
   float d = distance(wp, uWarpCenter);
   if (d >= uWarpRadius) return wp;
-  float t = 1.0 - (d / max(uWarpRadius, 1e-6));
-  return wp + vec3(0.0, 0.0, uWarpAmount * t);
+  float t = 1.0 - d / max(uWarpRadius, 1e-6);
+  return wp + vec3(0.0, 0.0, 150.0 * t);
 }
 `;
 
     let vs = shader.vertexShader;
     vs = inject + vs;
     vs = vs.replace(
-      /vec4\\s+start\\s*=\\s*modelViewMatrix\\s*\\*\\s*vec4\\s*\\(\\s*instanceStart\\s*,\\s*1\\.0\\s*\\)\\s*;/,
+      /vec4\s+start\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceStart\s*,\s*1\.0\s*\)\s*;/,
       `
 vec3 wpStart = (modelMatrix * vec4(instanceStart, 1.0)).xyz;
 vec3 pStart = applyWarp(wpStart);
@@ -477,7 +546,7 @@ vec4 start = viewMatrix * vec4(pStart, 1.0);
 `
     );
     vs = vs.replace(
-      /vec4\\s+end\\s*=\\s*modelViewMatrix\\s*\\*\\s*vec4\\s*\\(\\s*instanceEnd\\s*,\\s*1\\.0\\s*\\)\\s*;/,
+      /vec4\s+end\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceEnd\s*,\s*1\.0\s*\)\s*;/,
       `
 vec3 wpEnd = (modelMatrix * vec4(instanceEnd, 1.0)).xyz;
 vec3 pEnd = applyWarp(wpEnd);
@@ -488,53 +557,47 @@ vec4 end = viewMatrix * vec4(pEnd, 1.0);
     shader.vertexShader = vs;
   };
 
-  material.userData.shaderPatched = true;
+  material.userData.patched = true;
   return material;
 }
 ```
 
-In your frame loop, just update uniform values:
+## 11) GPX-Specific Notes (Per-Path Colors)
 
-```js
-const ShaderUniforms = {
-  uWarpCenter: { value: new THREE.Vector3() },
-  uWarpRadius: { value: 1000.0 },
-  uWarpAmount: { value: 200.0 },
-};
-```
+If each path needs a unique color:
+1. Keep `vertexColors: true` materials shared.
+2. Write each path color into segment color attributes.
+3. Group primarily by width/depth/worldUnits.
+4. Avoid one material per path color.
 
-## 8) Practical Checklist for New Projects
+This preserves flexibility with much lower material churn.
 
-1. Create `GlobeView`.
-2. Add imagery/elevation (optional but recommended for roads).
-3. Add vector `FeatureGeometryLayer` with:
-   - `batchId` callback,
-   - `style.stroke.base_altitude`.
-4. Convert created meshes to `LineSegments2`.
-5. Keep material cache and `resolution` sync.
-6. Add width mode state:
-   - `useIndividualWidths`,
-   - `widthMultiplier`,
-   - `useWorldUnits`.
-7. If needed, patch shaders with `onBeforeCompile`.
-8. Rebuild or restyle fat lines when class mapping logic changes.
+## 12) Width/Thickness Modes Summary
 
-## 9) Common Failure Modes
+- Variable width by class/path: `useIndividualWidths = true`
+- Fixed uniform width: `useIndividualWidths = false`
+- Global width scaling: `widthMultiplier`
+- Screen-like thickness: `useWorldUnits = false`
+- Perspective/metric thickness: `useWorldUnits = true`
+
+## 13) Common Failure Modes
 
 - Lines disappear after resize:
-  - `LineMaterial.resolution` is not updated.
-- Width toggles do nothing:
-  - materials are cached but state not reapplied to cached instances.
-- Wrong per-feature widths:
-  - missing or unstable `batchId` mapping.
-- Lines not draped to terrain:
-  - `base_altitude` not set or DEM not available at current zoom.
-- Shader patch breaks after dependency upgrade:
-  - string replacement target in shader changed; re-check patched chunks.
+  `LineMaterial.resolution` not updated.
+- Width controls appear ignored:
+  cached materials not re-applied after state change.
+- Duplicate lines over time:
+  stale anchors/old fat lines not cleaned before rebuild.
+- Memory growth in long sessions:
+  line geometries removed but not disposed.
+- Infinite processing loop:
+  retry queue has no time/attempt limit for unattached roots.
 
-## 10) Performance Notes
+## 14) Performance Checklist
 
-- Cache materials; avoid creating one material per feature.
-- Group segments by style/width before creating `LineSegments2`.
-- Avoid full rebuild on every small slider change if possible.
-- Use frustum culling carefully; disabling globally can be costly.
+1. Prefer vertex colors + shared materials.
+2. Group by width/render state, not by unique color when possible.
+3. Rebuild only when needed (width schema changes, major toggles).
+4. Dispose line geometries on cleanup.
+5. Avoid per-frame renderer state calls unless values changed.
+6. Keep frustum strategy explicit; disabling globally can be expensive.

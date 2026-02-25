@@ -4,7 +4,7 @@
 Address follow-up cleanup/performance items found during modularization.
 
 ## CURRENT_SUBTASK
-Material architecture optimization: prefer vertex colors so color diversity does not multiply material instances.
+Refresh standalone vector dossier to document the new optimized fat-line architecture and reuse patterns.
 
 ## SESSION INSIGHTS
 - `main.js` is now a thin orchestrator that wires modules.
@@ -62,6 +62,7 @@ Material architecture optimization: prefer vertex colors so color diversity does
 - Fat-line `LineSegmentsGeometry` objects are now explicitly disposed in cleanup paths (`cleanupAnchorEntry` and `resetProcessedFlag`) before removing references, reducing long-session GPU memory growth during tile rebuild/reload.
 - Road geometry grouping now carries color in vertex attributes by default (with fallback color injection when source color attributes are absent), allowing many distinct line colors without one material per color.
 - Material cache key now ignores `colorHex` when `vertexColors` are enabled, so material count scales primarily with render state/width rather than unique colors.
+- `VECTOR_LINES_DOSSIER.md` has been rewritten to reflect the updated architecture: vertex-color-first grouping, width-based batching, render-state-keyed material cache, bounded queue retries, and explicit geometry disposal in cleanup paths.
 
 ## Problems / TO DO
 - Consolidate duplicated road/shader code across many `main-*.js` files into shared modules (source setup, fat-line conversion, shader patching, UI state).
