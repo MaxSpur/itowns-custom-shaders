@@ -61,6 +61,7 @@ export const RoadGlobalState = {
     widthMultiplier: 2.0,
     pathsWidthMultiplier: 1.0,
     useWorldUnits: false,
+    worldUnitsUseSourceDistance: true,
     depthTest: true,
     altitudeOffset: 5.0,
     resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -111,6 +112,7 @@ export function applyPersistedRoadGlobalState() {
     if ('widthMultiplier' in saved && Number.isFinite(saved.widthMultiplier)) RoadGlobalState.widthMultiplier = saved.widthMultiplier;
     if ('pathsWidthMultiplier' in saved && Number.isFinite(saved.pathsWidthMultiplier)) RoadGlobalState.pathsWidthMultiplier = saved.pathsWidthMultiplier;
     if ('useWorldUnits' in saved) RoadGlobalState.useWorldUnits = !!saved.useWorldUnits;
+    if ('worldUnitsUseSourceDistance' in saved) RoadGlobalState.worldUnitsUseSourceDistance = !!saved.worldUnitsUseSourceDistance;
     if ('depthTest' in saved) RoadGlobalState.depthTest = !!saved.depthTest;
     if ('altitudeOffset' in saved && Number.isFinite(saved.altitudeOffset)) RoadGlobalState.altitudeOffset = saved.altitudeOffset;
     if ('useProjection' in saved) RoadGlobalState.useProjection = !!saved.useProjection;

@@ -68,6 +68,7 @@ export const StereoUniforms = {
     // NEW: view radius / ground center for cone
     uViewRadius: { value: 1000.0 },
     uGroundCenter: { value: new THREE.Vector3() },
+    uUseSourceDistanceForWorldUnits: { value: 1.0 },
 };
 
 // Cone visualization mode:
@@ -619,9 +620,11 @@ export function makeStereoProjectMaterial(mat) {
 
         shader.uniforms.uViewRadius = StereoUniforms.uViewRadius;     // NEW
         shader.uniforms.uGroundCenter = StereoUniforms.uGroundCenter;   // NEW
+        shader.uniforms.uUseSourceDistanceForWorldUnits = StereoUniforms.uUseSourceDistanceForWorldUnits;
 
 
         let vs = shader.vertexShader;
+        let fs = shader.fragmentShader;
         const inject = /* glsl */`
 uniform vec3  uSphereCenter;
 uniform float uSphereR;
@@ -644,6 +647,11 @@ uniform float uConeTopZ;           // z_t (apex → top center along axis)
 
 uniform float uViewRadius;      // NEW
 uniform vec3  uGroundCenter;    // NEW
+uniform float uUseSourceDistanceForWorldUnits;
+
+#ifdef WORLD_UNITS
+varying float vLinewidthScale;
+#endif
 
 // Helper: is stereographic projection actually active?
 bool isProjectionEnabled() {
@@ -905,6 +913,7 @@ bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
             vs = vs.replace(
                 /vec4\s+start\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceStart\s*,\s*1\.0\s*\)\s*;/,
                 `
+    vec4 startOriginal = modelViewMatrix * vec4( instanceStart, 1.0 );
     vec3 wpStart = (modelMatrix * vec4( instanceStart, 1.0 )).xyz;
     vec3 pStart  = applyProjection(wpStart);
     vec4 start;
@@ -913,6 +922,7 @@ bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
             vs = vs.replace(
                 /vec4\s+end\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceEnd\s*,\s*1\.0\s*\)\s*;/,
                 `
+    vec4 endOriginal = modelViewMatrix * vec4( instanceEnd, 1.0 );
     vec3 wpEnd = (modelMatrix * vec4( instanceEnd, 1.0 )).xyz;
     vec3 pEnd  = applyProjection(wpEnd);
     vec4 end;
@@ -924,9 +934,41 @@ bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
       start = viewMatrix * vec4( pStart, 1.0 );
       end   = viewMatrix * vec4( pEnd, 1.0 );
     }
+
+    float linewidthScaleStart = 1.0;
+    float linewidthScaleEnd = 1.0;
+    if (!cullSegment && uUseSourceDistanceForWorldUnits > 0.5) {
+      float depthOrigStart = max(abs(startOriginal.z), 1e-4);
+      float depthProjStart = max(abs(start.z), 1e-4);
+      float depthOrigEnd = max(abs(endOriginal.z), 1e-4);
+      float depthProjEnd = max(abs(end.z), 1e-4);
+      linewidthScaleStart = clamp(depthProjStart / depthOrigStart, 0.02, 50.0);
+      linewidthScaleEnd = clamp(depthProjEnd / depthOrigEnd, 0.02, 50.0);
+    }
+
+    #ifdef WORLD_UNITS
+      vLinewidthScale = ( position.y < 0.5 ) ? linewidthScaleStart : linewidthScaleEnd;
+    #endif
   `
             );
+            vs = vs.replace(
+                /float\s+hw\s*=\s*linewidth\s*\*\s*0\.5\s*;/,
+                'float hw = linewidth * max(vLinewidthScale, 1e-4) * 0.5;'
+            );
+            fs = `
+#ifdef WORLD_UNITS
+varying float vLinewidthScale;
+#endif
+` + fs;
+            fs = fs.replace(
+                /float\s+norm\s*=\s*len\s*\/\s*linewidth\s*;/,
+                `
+                float effectiveLinewidth = max(linewidth * vLinewidthScale, 1e-4);
+                float norm = len / effectiveLinewidth;
+`
+            );
             shader.vertexShader = vs;
+            shader.fragmentShader = fs;
         } else if (mat.isLineBasicMaterial === true) {
             shader.vertexShader =
                 inject +

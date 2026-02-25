@@ -71,6 +71,7 @@ export function attachRoadFrameSync(view, {
 
         StereoUniforms.uProjectionStrength.value = useProjection ? 1.0 : 0.0;
         StereoUniforms.uCullBackfaces.value = useCull ? 1.0 : 0.0;
+        StereoUniforms.uUseSourceDistanceForWorldUnits.value = RoadGlobalState.worldUnitsUseSourceDistance ? 1.0 : 0.0;
 
         for (const entry of RoadTileAnchors.values()) {
             const source = entry.sourceRoot;

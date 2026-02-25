@@ -124,6 +124,10 @@ export function createRoadsUI({
             <input type="checkbox" id="ui-worldunits" ${RoadGlobalState.useWorldUnits ? 'checked' : ''} style="${checkboxStyle}">
             <span style="${TOGGLE_TEXT_STYLE}">World Units (Meters)</span>
         </label>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-worldunits-source-distance" ${RoadGlobalState.worldUnitsUseSourceDistance ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Projected Width Uses Source Distance</span>
+        </label>
 
         <div style="margin-top:8px; padding-top:8px; border-top:1px solid #4b5066; display:flex; flex-direction:column; gap:6px;">
             <div style="font-weight:bold; font-size:13px;">GPX Paths</div>
@@ -161,6 +165,7 @@ export function createRoadsUI({
     const altSlider = document.getElementById('ui-alt');
     const altLabel = document.getElementById('ui-alt-val');
     const worldUnitsInput = document.getElementById('ui-worldunits');
+    const worldUnitsSourceDistanceInput = document.getElementById('ui-worldunits-source-distance');
     const pathWidthSlider = document.getElementById('ui-path-width');
     const pathWidthLabel = document.getElementById('ui-path-width-val');
     const pathProjectionInput = document.getElementById('ui-path-projection');
@@ -204,6 +209,7 @@ export function createRoadsUI({
     altSlider.value = RoadGlobalState.altitudeOffset;
     altLabel.innerText = RoadGlobalState.altitudeOffset.toFixed(1) + ' m';
     worldUnitsInput.checked = RoadGlobalState.useWorldUnits;
+    worldUnitsSourceDistanceInput.checked = RoadGlobalState.worldUnitsUseSourceDistance;
     pathWidthSlider.value = RoadGlobalState.pathsWidthMultiplier;
     pathWidthLabel.innerText = RoadGlobalState.pathsWidthMultiplier.toFixed(1) + 'x';
     pathProjectionInput.checked = RoadGlobalState.pathsUseProjection;
@@ -289,6 +295,12 @@ export function createRoadsUI({
     worldUnitsInput.addEventListener('change', (e) => {
         RoadGlobalState.useWorldUnits = e.target.checked;
         RoadUIStorage.save({ useWorldUnits: RoadGlobalState.useWorldUnits });
+        triggerUpdate();
+    });
+
+    worldUnitsSourceDistanceInput.addEventListener('change', (e) => {
+        RoadGlobalState.worldUnitsUseSourceDistance = e.target.checked;
+        RoadUIStorage.save({ worldUnitsUseSourceDistance: RoadGlobalState.worldUnitsUseSourceDistance });
         triggerUpdate();
     });
 

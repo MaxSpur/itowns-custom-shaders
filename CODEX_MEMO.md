@@ -1,10 +1,10 @@
 # CODEX_MEMO
 
 ## CURRENT_TASK
-Polish map defaults and road controls after GPX integration.
+Improve projected line-thickness behavior in `World Units` mode.
 
 ## CURRENT_SUBTASK
-Set default globe center to Vincennes and fix the Roads `Visibility` toggle to hide/show all road vectors.
+Add a toggle to keep projected geometry while computing world-unit thickness from original (pre-projection) camera distance.
 
 ## SESSION INSIGHTS
 - `main.js` is now a thin orchestrator that wires modules.
@@ -52,7 +52,8 @@ Set default globe center to Vincennes and fix the Roads `Visibility` toggle to h
 - Line-thickness behavior in the roads pipeline is controlled by:
   - `RoadGlobalState.useIndividualWidths` (variable per road class vs uniform base width),
   - `RoadGlobalState.widthMultiplier` (global scalar),
-  - `RoadGlobalState.useWorldUnits` (screen-space/fixed px thickness vs world-space/perspective thickness).
+  - `RoadGlobalState.useWorldUnits` (screen-space/fixed px thickness vs world-space/perspective thickness),
+  - `RoadGlobalState.worldUnitsUseSourceDistance` (when projected, keep perspective thickness tied to original terrain distance instead of projected-surface distance).
 - Vector data source is IGN BDTOPO WFS (`BDTOPO_V3:troncon_de_route`) through `itowns.WFSSource` + `FeatureGeometryLayer`.
 - The project has many experimental `main-*.js` variants with overlapping logic; this is useful history but high maintenance overhead.
 - `npm run build` currently passes with the modularized pipeline and dynamic base-path config.
@@ -79,6 +80,10 @@ Set default globe center to Vincennes and fix the Roads `Visibility` toggle to h
   - `src/roads/fatLinePipeline.js`: added `applyRoadVisibilityState`.
   - `src/roads/pipeline/tileLifecycle.js`: new anchors inherit `RoadGlobalState.visible` on creation.
   - `src/roads/renderer.js` + `src/roads/ui.js`: UI toggle now calls pipeline visibility API and applies persisted state on init.
+- `makeStereoProjectMaterial` now supports a world-units thickness-distance mode switch:
+  - projected positions still drive line placement on sphere/cone,
+  - optional per-segment width scaling uses the ratio `projectedDepth/originalDepth` to preserve original-distance perspective feel,
+  - exposed in UI as `Projected Width Uses Source Distance` and synced per-frame via `StereoUniforms.uUseSourceDistanceForWorldUnits`.
 
 ## Problems / TO DO
 - Consolidate duplicated road/shader code across many `main-*.js` files into shared modules (source setup, fat-line conversion, shader patching, UI state).
