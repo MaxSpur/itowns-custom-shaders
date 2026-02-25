@@ -1,12 +1,22 @@
 # CODEX_MEMO
 
 ## CURRENT_TASK
-Repository cleanup and GitHub Pages deployment hardening via GitHub Actions.
+Promote vector-rendering implementation as root entry point and archive multi-globe script under `Experimental/`.
 
 ## CURRENT_SUBTASK
-CI deploy workflow and ignore/untracking cleanup completed; pending commit/push and GitHub Pages setting verification.
+Swap root `main.js` with `Experimental/main-latest.js` while preserving intent/history.
 
 ## SESSION INSIGHTS
+- Root entry file now points to vector/fat-line implementation (`main.js` content from former `Experimental/main-latest.js`).
+- Former root multi-globe script moved to `Experimental/main-multi-globe.js`.
+- `VECTOR_LINES_DOSSIER.md` was fully rewritten as a standalone guide with no dependency on local project files/functions.
+- New dossier now includes reusable snippets for:
+  - `WFSSource` and `FileSource` vector ingestion,
+  - `FeatureGeometryLayer` setup with `batchId` and DEM altitude draping,
+  - conversion to `LineSegments2` fat lines,
+  - material caching/sync,
+  - variable/fixed/perspective thickness modes,
+  - generic shader patching via `onBeforeCompile`.
 - GitHub Pages deployment now uses a dedicated workflow at [deploy-pages.yml](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/.github/workflows/deploy-pages.yml) (build artifact from `dist/` + `actions/deploy-pages`).
 - Added repository-level [.gitignore](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/.gitignore) for `node_modules/`, build outputs, local certs, logs, and macOS artifacts.
 - `vite.config.js` is now CI-safe: local certs are loaded only for `vite serve` and only if files exist.

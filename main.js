@@ -1,149 +1,27 @@
 import * as itowns from 'itowns';
 import * as THREE from 'three';
 
+// Import Fat Lines modules
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 
-import { VRButton } from 'three/addons/webxr/VRButton.js';
-
-const EARTH_RADIUS = 6378137;
-const GLOBE_SPACING = EARTH_RADIUS * 2.2;
-const MIN_SURFACE_OFFSET = 5; // Minimum 5m above surface
-const MAX_CAMERA_DISTANCE = EARTH_RADIUS * 100;
-const MIN_ZOOM_RATIO = 0.02;
-const MAX_ZOOM_RATIO = 0.65;
-const MAX_LATITUDE_DEG = 89;
-const ROTATION_SPEED_DEG_PER_PX = 0.15;
-const ROTATION_BUTTON_BASE_STEP = 5;
-
-const AXIS_Z = new THREE.Vector3(0, 0, 1);
-const AXIS_X = new THREE.Vector3(1, 0, 0);
-
-const cameraTarget = new THREE.Vector3();
-const scratchVecA = new THREE.Vector3();
-const scratchVecB = new THREE.Vector3();
-const scratchVecC = new THREE.Vector3();
-const scratchScale = new THREE.Vector3();
-const scratchCenter = new THREE.Vector3();
-const scratchRadii = new THREE.Vector3();
-const scratchEuler = new THREE.Euler();
-const quatTilt = new THREE.Quaternion();
-const quatSpin = new THREE.Quaternion();
-const scratchQuat = new THREE.Quaternion();
-const pointerNDC = new THREE.Vector2();
-const raycaster = new THREE.Raycaster();
-const sphereCenterWorld = new THREE.Vector3();
-const pickSurfaceCache = {
-    worldPoint: new THREE.Vector3(),
-    localDir: new THREE.Vector3(),
-};
-const scratchForward = new THREE.Vector3();
-const scratchRight = new THREE.Vector3();
-const scratchUp = new THREE.Vector3();
-const scratchVecD = new THREE.Vector3();
-const scratchVecE = new THREE.Vector3();
-const scratchVecF = new THREE.Vector3();
-const scratchMatrixInv = new THREE.Matrix4();
-const scratchRayOrigin = new THREE.Vector3();
-const scratchRayDir = new THREE.Vector3();
-
-// -----------------------------------------------------------------------------
-// 1. Base GlobeView with one globe layer
-// -----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 1. SETUP VIEW
+// ----------------------------------------------------------------------------
 
 const viewerDiv = document.getElementById('viewerDiv');
-
-// Initial placement: near Paris
 const placement = {
-    coord: new itowns.Coordinates('EPSG:4326', 2.351323, 48.856712, 0),
-    range: 3.5e7,
+    coord: new itowns.Coordinates('EPSG:4326', 4.768, 45.537),
+    range: 5000,
+    tilt: 80,
+    heading: 0
 };
-
-const globe1Root = new THREE.Object3D();
-const view = new itowns.GlobeView(viewerDiv, placement, {
-    noControls: true, // we will not use built-in controls
-    object3d: globe1Root,
-});
-
-// camera reference
-const camera = view.camera3D || view.camera.camera3D;
-camera.near = 100;
-camera.far = EARTH_RADIUS * 1000;
-camera.updateProjectionMatrix();
-camera.lookAt(0, 0, 0);
-camera.updateMatrixWorld(true);
-
-// First globe: the default one created by GlobeView
-const globe1Layer = view.tileLayer;
-disableHorizonCulling(globe1Layer);
-const atmosphereLayer = view.getLayerById('atmosphere');
-if (atmosphereLayer && atmosphereLayer.object3d) {
-    atmosphereLayer.visible = false;
-    atmosphereLayer.object3d.visible = false;
-}
-
-globe1Root.position.set(-GLOBE_SPACING * 0.5, 0, 0);
-globe1Root.updateMatrixWorld(true);
-
-// Collect roots and their orientation state (index 0: main globe, index 1: second globe)
-const globeRoots = [];
-const globeStates = [];
-globeRoots[0] = globe1Root;
-globeStates[0] = { lon: 0, lat: 0 };
-let activeGlobeIndex = 0;
-const axesHelpers = [];
-const wireframeHelpers = [];
-let debugReadout = null;
-const rayDebugState = {
-    enabled: false,
-    rayHelper: null,
-    hitHelper: null,
-    normalHelper: null,
-};
-const pickingSettings = {
-    useSphere: false,
-};
-const interactionState = {
-    isDragging: false,
-    mode: null,
-    lastX: 0,
-    lastY: 0,
-    hasWorldGrab: false,
-    grabbedWorldPoint: new THREE.Vector3(),
-    // For rotation: store initial grabbed local direction (unit vector on ellipsoid surface)
-    grabbedLocalDir: new THREE.Vector3(),
-    // Store initial globe quaternion at drag start for rotation
-    initialQuaternion: new THREE.Quaternion(),
-};
-
-function disableHorizonCulling(layer) {
-    const baseCulling = itowns.TiledGeometryLayer.prototype.culling;
-    layer.culling = function cullingWithoutHorizon(node, camera) {
-        if (baseCulling.call(this, node, camera)) {
-            return true;
-        }
-        if (node.level < this.minSubdivisionLevel) {
-            return false;
-        }
-        return false;
-    };
-}
-
-// -----------------------------------------------------------------------------
-// 2. Imagery source (IGN orthophotos) and layer for globe 1
-// -----------------------------------------------------------------------------
-
-const orthoSource = new itowns.WMTSSource({
-    url: 'https://data.geopf.fr/wmts?',
-    crs: 'EPSG:3857',
-    name: 'ORTHOIMAGERY.ORTHOPHOTOS',
-    tileMatrixSet: 'PM',
-    format: 'image/jpeg',
-    zoom: { min: 0, max: 18 },
-});
-
-const orthoLayer1 = new itowns.ColorLayer('Ortho_globe1', {
-    source: orthoSource,
-});
-view.addLayer(orthoLayer1);
+const view = new itowns.GlobeView(viewerDiv, placement);
+const RoadFatLineRoot = new THREE.Group();
+RoadFatLineRoot.name = 'RoadFatLines';
+RoadFatLineRoot.frustumCulled = false;
+view.scene.add(RoadFatLineRoot);
 
 // Elevation
 const elevationSource = new itowns.WMTSSource({
@@ -152,1269 +30,2159 @@ const elevationSource = new itowns.WMTSSource({
     name: 'ELEVATION.ELEVATIONGRIDCOVERAGE.SRTM3',
     tileMatrixSet: 'WGS84G',
     format: 'image/x-bil;bits=32',
-    zoom: { min: 0, max: 18 }
+    zoom: { min: 2, max: 10 }
 });
-const elevationLayer1 = new itowns.ElevationLayer('MNT_WORLD', {
+const elevationLayer = new itowns.ElevationLayer('MNT_WORLD', {
     source: elevationSource,
 });
-view.addLayer(elevationLayer1);
+view.addLayer(elevationLayer);
 
-// -----------------------------------------------------------------------------
-// 3. Second globe: same placement as in view_multiglobe
-// -----------------------------------------------------------------------------
-
-// Root for the second globe
-const globe2Root = new THREE.Object3D();
-globe2Root.position.set(GLOBE_SPACING * 0.5, 0, 0);
-globe2Root.updateMatrixWorld(true);
-
-// Add it to the scene
-view.scene.add(globe2Root);
-
-// Second globe layer
-const globe2Layer = new itowns.GlobeLayer('globe2', globe2Root);
-itowns.View.prototype.addLayer.call(view, globe2Layer);
-disableHorizonCulling(globe2Layer);
-
-// Slightly different base color
-// globe2Layer.diffuse = new THREE.Color(0xd0d5d8);
-
-// Imagery for globe 2 (reuse same source)
-const orthoLayer2 = new itowns.ColorLayer('Ortho_globe2', {
+// Orthophoto
+const orthoSource = new itowns.WMTSSource({
+    url: 'https://data.geopf.fr/wmts?',
+    crs: 'EPSG:3857',
+    name: 'ORTHOIMAGERY.ORTHOPHOTOS',
+    tileMatrixSet: 'PM',
+    format: 'image/jpeg',
+});
+const orthoLayer = new itowns.ColorLayer('Ortho', {
     source: orthoSource,
 });
-itowns.View.prototype.addLayer.call(view, orthoLayer2, globe2Layer);
+view.addLayer(orthoLayer);
 
-// Register its root for independent rotation
-globeRoots[1] = globe2Root;
-globeStates[1] = { lon: 0, lat: 0 };
-applyGlobeOrientation(0);
-applyGlobeOrientation(1);
-frameAllGlobes();
+// ----------------------------------------------------------------------------
+// 2. ROADS CONFIGURATION
+// ----------------------------------------------------------------------------
 
-// -----------------------------------------------------------------------------
-// 4. Camera helpers + debugging utilities
-// -----------------------------------------------------------------------------
+const ROAD_COLOR = {
+    'Type autoroutier': '#2E86FF',
+    'Route à 2 chaussées': '#FF4D4D',
+    'Route à 1 chaussée': '#FFC400',
+    'Bretelle': '#00C8FF',
+    'Rond-point': '#BBBBBB',
+    'Chemin': '#f6ff75',
+    'Route empierrée': '#FF9100',
+    'Sentier': '#00E676',
+    'Escalier': '#FFFFFF',
+};
 
-function frameGlobes(indexList = []) {
-    const indices = (indexList.length ? indexList : globeRoots.map((root, idx) => (root ? idx : null)))
-        .filter(index => index !== null && globeRoots[index]);
-    if (!indices.length) {
-        return;
-    }
+// Base widths (relative importance)
+const ROAD_WIDTH_BASE = {
+    'Type autoroutier': 10,
+    'Route à 2 chaussées': 8,
+    'Route à 1 chaussée': 5,
+    'Bretelle': 4,
+    'Rond-point': 6,
+    'Chemin': 2,
+    'Route empierrée': 2,
+    'Sentier': 1.5,
+    'Escalier': 1,
+};
 
-    const center = new THREE.Vector3();
-    const radii = [];
-    indices.forEach(index => {
-        const root = globeRoots[index];
-        root.updateMatrixWorld(true);
-        root.getWorldPosition(scratchVecA);
-        center.add(scratchVecA);
-        root.getWorldScale(scratchScale);
-        radii.push(EARTH_RADIUS * Math.max(scratchScale.x, scratchScale.y, scratchScale.z));
-    });
-    center.multiplyScalar(1 / indices.length);
+const RoadFeatureRegistry = {
+    keyToBatchId: new Map(),
+    widthByBatchId: new Map(),
+    nextBatchId: 0,
+};
 
-    let maxExtent = 0;
-    indices.forEach((index, idx) => {
-        const root = globeRoots[index];
-        root.getWorldPosition(scratchVecA);
-        const extent = scratchVecA.distanceTo(center) + (radii[idx] || 0);
-        if (extent > maxExtent) {
-            maxExtent = extent;
-        }
-    });
-
-    const distance = Math.max(maxExtent * 2.2, EARTH_RADIUS * 5);
-    cameraTarget.copy(center);
-    camera.position.set(center.x, center.y - distance, center.z + distance * 0.45);
-    camera.lookAt(cameraTarget);
-    camera.updateMatrixWorld(true);
-    view.notifyChange(camera);
-    updateDebugReadout();
+function getFeatureKey(props = {}) {
+    return props.id || props.ID || props.pk || props.pkuid || props.id_troncon || props.numero || props.gid || props.IDENT || props.CODE || null;
 }
 
-function frameGlobe(index) {
-    if (!globeRoots[index]) {
-        return;
-    }
-    frameGlobes([index]);
-}
-
-function frameAllGlobes() {
-    frameGlobes();
-}
-
-function ensureAxesHelper(index) {
-    if (axesHelpers[index]) {
-        return axesHelpers[index];
-    }
-    const helper = new THREE.AxesHelper(EARTH_RADIUS * 0.5);
-    helper.visible = false;
-    globeRoots[index].add(helper);
-    axesHelpers[index] = helper;
-    return helper;
-}
-
-function ensureWireframeHelper(index) {
-    if (wireframeHelpers[index]) {
-        return wireframeHelpers[index];
-    }
-    const geometry = new THREE.SphereGeometry(EARTH_RADIUS, 16, 12);
-    const helper = new THREE.LineSegments(
-        new THREE.WireframeGeometry(geometry),
-        new THREE.LineBasicMaterial({ color: 0xffff00 })
-    );
-    helper.visible = false;
-    globeRoots[index].add(helper);
-    wireframeHelpers[index] = helper;
-    return helper;
-}
-
-function setAxesVisible(visible) {
-    globeRoots.forEach((root, idx) => {
-        if (!root) return;
-        const helper = ensureAxesHelper(idx);
-        helper.visible = visible;
-    });
-    view.notifyChange(camera);
-}
-
-function ensureRayDebugHelpers() {
-    if (rayDebugState.rayHelper) {
-        return;
-    }
-    const rayHelper = new THREE.ArrowHelper(new THREE.Vector3(0, -1, 0), new THREE.Vector3(), EARTH_RADIUS, 0xff00ff);
-    rayHelper.line.material.depthTest = false;
-    rayHelper.cone.material.depthTest = false;
-    rayHelper.line.renderOrder = 999;
-    rayHelper.cone.renderOrder = 999;
-    rayHelper.visible = false;
-    const hitHelper = new THREE.Mesh(
-        new THREE.SphereGeometry(EARTH_RADIUS * 0.01, 12, 8),
-        new THREE.MeshBasicMaterial({ color: 0xffff00, depthTest: false })
-    );
-    hitHelper.visible = false;
-    const normalHelper = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), EARTH_RADIUS * 0.4, 0x00ff00);
-    normalHelper.line.material.depthTest = false;
-    normalHelper.cone.material.depthTest = false;
-    normalHelper.line.renderOrder = 999;
-    normalHelper.cone.renderOrder = 999;
-    normalHelper.visible = false;
-    view.scene.add(rayHelper);
-    view.scene.add(hitHelper);
-    view.scene.add(normalHelper);
-    rayDebugState.rayHelper = rayHelper;
-    rayDebugState.hitHelper = hitHelper;
-    rayDebugState.normalHelper = normalHelper;
-}
-
-function setRayDebugVisible(visible) {
-    rayDebugState.enabled = visible;
-    if (!rayDebugState.rayHelper) {
-        ensureRayDebugHelpers();
-    }
-    const helpers = [rayDebugState.rayHelper, rayDebugState.hitHelper, rayDebugState.normalHelper];
-    helpers.forEach(helper => {
-        if (!helper) return;
-        helper.visible = visible && !!helper.userData.active;
-    });
-    view.notifyChange(true);
-}
-
-function updateRayDebug(origin, direction, hitPoint, center) {
-    if (!rayDebugState.enabled) {
-        return;
-    }
-    ensureRayDebugHelpers();
-    const rayHelper = rayDebugState.rayHelper;
-    const hitHelper = rayDebugState.hitHelper;
-    const normalHelper = rayDebugState.normalHelper;
-    const length = hitPoint ? origin.distanceTo(hitPoint) : EARTH_RADIUS * 2;
-    rayHelper.position.copy(origin);
-    rayHelper.setDirection(direction);
-    rayHelper.setLength(length, EARTH_RADIUS * 0.05, EARTH_RADIUS * 0.02);
-    rayHelper.visible = true;
-    rayHelper.userData.active = true;
-
-    if (hitPoint) {
-        hitHelper.position.copy(hitPoint);
-        hitHelper.visible = true;
-        hitHelper.userData.active = true;
-        if (center) {
-            scratchVecE.copy(hitPoint).sub(center).normalize();
-            normalHelper.position.copy(hitPoint);
-            normalHelper.setDirection(scratchVecE);
-            normalHelper.setLength(EARTH_RADIUS * 0.4, EARTH_RADIUS * 0.05, EARTH_RADIUS * 0.02);
-            normalHelper.visible = true;
-            normalHelper.userData.active = true;
+function registerRoadFeature(props = {}) {
+    const key = getFeatureKey(props);
+    let batchId;
+    if (key) {
+        if (RoadFeatureRegistry.keyToBatchId.has(key)) {
+            batchId = RoadFeatureRegistry.keyToBatchId.get(key);
+        } else {
+            batchId = RoadFeatureRegistry.nextBatchId++;
+            RoadFeatureRegistry.keyToBatchId.set(key, batchId);
         }
     } else {
-        hitHelper.visible = false;
-        hitHelper.userData.active = false;
-        normalHelper.visible = false;
-        normalHelper.userData.active = false;
+        batchId = RoadFeatureRegistry.nextBatchId++;
     }
-
-    // Notify view to re-render
-    view.notifyChange(true);
+    const width = ROAD_WIDTH_BASE[props.nature] || 2;
+    RoadFeatureRegistry.widthByBatchId.set(batchId, width);
+    return batchId;
 }
 
-function setWireframeVisible(visible) {
-    globeRoots.forEach((root, idx) => {
-        if (!root) return;
-        const helper = ensureWireframeHelper(idx);
-        helper.visible = visible;
-    });
-    view.notifyChange(camera);
+function getWidthForBatch(batchId) {
+    return RoadFeatureRegistry.widthByBatchId.get(batchId);
 }
 
-function toFixed(value, digits = 2) {
-    return Number(value.toFixed(digits));
-}
-
-function setSpherePickingEnabled(enabled) {
-    pickingSettings.useSphere = !!enabled;
-}
-
-/**
- * Raycast to an ellipsoid and return the closest hit point.
- * Handles cases where camera may be very close or even "behind" terrain.
- * Returns null if no intersection.
- */
-function intersectEllipsoid(mouseX, mouseY, root) {
-    if (!root) {
-        return null;
-    }
-
-    const rect = viewerDiv.getBoundingClientRect();
-    pointerNDC.x = ((mouseX - rect.left) / rect.width) * 2 - 1;
-    pointerNDC.y = -((mouseY - rect.top) / rect.height) * 2 + 1;
-    raycaster.setFromCamera(pointerNDC, camera);
-
-    root.updateMatrixWorld(true);
-    root.getWorldPosition(sphereCenterWorld);
-
-    if (pickingSettings.useSphere) {
-        const radius = getGlobeRadiusForRoot(root);
-        const sphereHit = computeSphereIntersectionBidirectional(
-            raycaster.ray.origin,
-            raycaster.ray.direction,
-            sphereCenterWorld,
-            radius,
-            root,
-        );
-        return sphereHit;
-    }
-
-    // Ellipsoid intersection: work in world space relative to globe center
-    // This avoids issues with matrix transformations
-    const rayOriginRelative = scratchRayOrigin.copy(raycaster.ray.origin).sub(sphereCenterWorld);
-    const rayDir = scratchRayDir.copy(raycaster.ray.direction);
-
-    // Apply inverse rotation to work in globe's local orientation
-    const invQuat = scratchQuat.copy(root.quaternion).invert();
-    rayOriginRelative.applyQuaternion(invQuat);
-    rayDir.applyQuaternion(invQuat);
-
-    // Get ellipsoid radii
-    const radii = scratchRadii.set(
-        itowns.ellipsoidSizes.x,
-        itowns.ellipsoidSizes.y,
-        itowns.ellipsoidSizes.z
-    );
-
-    // Apply globe scale
-    root.getWorldScale(scratchScale);
-    radii.multiply(scratchScale);
-
-    const invRx2 = 1 / (radii.x * radii.x);
-    const invRy2 = 1 / (radii.y * radii.y);
-    const invRz2 = 1 / (radii.z * radii.z);
-
-    const ox = rayOriginRelative.x;
-    const oy = rayOriginRelative.y;
-    const oz = rayOriginRelative.z;
-    const dx = rayDir.x;
-    const dy = rayDir.y;
-    const dz = rayDir.z;
-
-    const A = dx * dx * invRx2 + dy * dy * invRy2 + dz * dz * invRz2;
-    const B = 2 * (ox * dx * invRx2 + oy * dy * invRy2 + oz * dz * invRz2);
-    const C = ox * ox * invRx2 + oy * oy * invRy2 + oz * oz * invRz2 - 1;
-    const discriminant = B * B - 4 * A * C;
-
-    if (discriminant < 0 || Math.abs(A) < 1e-12) {
-        updateRayDebug(raycaster.ray.origin, raycaster.ray.direction, null, sphereCenterWorld);
-        return null;
-    }
-
-    const sqrtDisc = Math.sqrt(discriminant);
-    const t0 = (-B - sqrtDisc) / (2 * A);
-    const t1 = (-B + sqrtDisc) / (2 * A);
-
-    // Collect valid intersections (both directions for close-up camera)
-    const candidates = [];
-    [t0, t1].forEach(t => {
-        if (Number.isFinite(t)) {
-            // Compute local hit point (in rotated local space)
-            const localHit = scratchVecC.copy(rayDir).multiplyScalar(t).add(rayOriginRelative);
-
-            // Transform back to world space
-            const worldHit = scratchVecD.copy(localHit).applyQuaternion(root.quaternion).add(sphereCenterWorld);
-            const distToCamera = camera.position.distanceTo(worldHit);
-
-            // Compute surface normal in world space for facing check
-            scratchVecE.copy(worldHit).sub(sphereCenterWorld);
-            const isFrontFacing = raycaster.ray.direction.dot(scratchVecE) < 0;
-
-            candidates.push({
-                t,
-                localHit: localHit.clone(),
-                worldHit: worldHit.clone(),
-                distToCamera,
-                isFrontFacing,
-            });
-        }
-    });
-
-    if (!candidates.length) {
-        updateRayDebug(raycaster.ray.origin, raycaster.ray.direction, null, sphereCenterWorld);
-        return null;
-    }
-
-    // Sort by distance to camera
-    candidates.sort((a, b) => a.distToCamera - b.distToCamera);
-
-    // Prefer front-facing hit if available
-    let best = candidates[0];
-    for (const c of candidates) {
-        if (c.isFrontFacing) {
-            best = c;
-            break;
+// Global State
+const RoadGlobalState = {
+    visible: true,
+    widthMultiplier: 2.0, // Default to 2.0x for initial visibility
+    useWorldUnits: false,
+    depthTest: true,      // If true: Default Mode (Z-fighting fix). If false: Always On Top (Ghost Mode).
+    altitudeOffset: 5.0,
+    resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
+    useProjection: true,
+    cullBackfaces: false,
+    disableFrustumCulling: false,
+    useIndividualWidths: true,
+};
+const ROAD_UI_STORAGE_KEY = 'itowns-road-ui-v1';
+const RoadUIStorage = (() => {
+    let cache = {};
+    if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+            const raw = window.localStorage.getItem(ROAD_UI_STORAGE_KEY);
+            if (raw) {
+                cache = JSON.parse(raw) || {};
+            }
+        } catch (err) {
+            console.warn('Failed to parse stored road UI state', err);
+            cache = {};
         }
     }
-
-    // Compute local direction (normalized position on unit ellipsoid)
-    const localDir = scratchVecF.copy(best.localHit);
-    localDir.x /= radii.x;
-    localDir.y /= radii.y;
-    localDir.z /= radii.z;
-    localDir.normalize();
-
-    updateRayDebug(raycaster.ray.origin, raycaster.ray.direction, best.worldHit, sphereCenterWorld);
-
     return {
-        worldPoint: best.worldHit.clone(),
-        localPoint: best.localHit.clone(),
-        localDir: localDir.clone(),
-        distance: best.distToCamera,
+        get() {
+            return cache;
+        },
+        save(patch = {}) {
+            cache = { ...cache, ...patch };
+            if (typeof window !== 'undefined' && window.localStorage) {
+                try {
+                    window.localStorage.setItem(ROAD_UI_STORAGE_KEY, JSON.stringify(cache));
+                } catch (err) {
+                    console.warn('Failed to persist road UI state', err);
+                }
+            }
+        }
+    };
+})();
+
+function applyPersistedRoadGlobalState() {
+    const saved = RoadUIStorage.get();
+    if (!saved) return;
+    if ('visible' in saved) RoadGlobalState.visible = !!saved.visible;
+    if ('widthMultiplier' in saved && Number.isFinite(saved.widthMultiplier)) RoadGlobalState.widthMultiplier = saved.widthMultiplier;
+    if ('useWorldUnits' in saved) RoadGlobalState.useWorldUnits = !!saved.useWorldUnits;
+    if ('depthTest' in saved) RoadGlobalState.depthTest = !!saved.depthTest;
+    if ('altitudeOffset' in saved && Number.isFinite(saved.altitudeOffset)) RoadGlobalState.altitudeOffset = saved.altitudeOffset;
+    if ('useProjection' in saved) RoadGlobalState.useProjection = !!saved.useProjection;
+    if ('cullBackfaces' in saved) RoadGlobalState.cullBackfaces = !!saved.cullBackfaces;
+    if ('disableFrustumCulling' in saved) RoadGlobalState.disableFrustumCulling = !!saved.disableFrustumCulling;
+    if ('useIndividualWidths' in saved) RoadGlobalState.useIndividualWidths = !!saved.useIndividualWidths;
+}
+
+function getPersistedSphereSettings() {
+    const saved = RoadUIStorage.get() || {};
+    const defaults = { radius: 1000, offset01: 1.0, opacity: 0.54, coneHeightMul: 1.0 };
+    return {
+        radius: Number.isFinite(saved.sphereRadius) ? saved.sphereRadius : defaults.radius,
+        offset01: Number.isFinite(saved.sphereOffset) ? saved.sphereOffset : defaults.offset01,
+        opacity: Number.isFinite(saved.sphereOpacity) ? saved.sphereOpacity : defaults.opacity,
+        coneHeightMul: Number.isFinite(saved.sphereConeHeightMul) ? saved.sphereConeHeightMul : defaults.coneHeightMul,
     };
 }
 
-/**
- * Sphere intersection with bidirectional ray support for close-up camera.
- */
-function computeSphereIntersectionBidirectional(rayOrigin, rayDir, center, radius, root) {
-    scratchVecD.copy(rayOrigin).sub(center);
-    const a = 1; // rayDir is normalized
-    const b = 2 * scratchVecD.dot(rayDir);
-    const c = scratchVecD.lengthSq() - radius * radius;
-    const discriminant = b * b - 4 * a * c;
+// --- Sphere/cone UI mapping helpers ----------------------------------------
+const VIEW_RADIUS_MIN = 100;
+const VIEW_RADIUS_MAX = 20000;
 
-    if (discriminant < 0) {
-        updateRayDebug(rayOrigin, rayDir, null, center);
-        return null;
-    }
+// --- Cone height multiplier mapping (for cone mode) ------------------------
+const CONE_HEIGHT_MIN = 0.1;
+const CONE_HEIGHT_MAX = 10.0;
 
-    const sqrtDisc = Math.sqrt(discriminant);
-    const t0 = (-b - sqrtDisc) / 2;
-    const t1 = (-b + sqrtDisc) / 2;
-
-    const candidates = [];
-    [t0, t1].forEach(t => {
-        if (Number.isFinite(t)) {
-            const worldHit = scratchVecE.copy(rayDir).multiplyScalar(t).add(rayOrigin);
-            const distToCamera = Math.abs(t);
-
-            // Check if front-facing
-            scratchVecF.copy(worldHit).sub(center);
-            const isFrontFacing = rayDir.dot(scratchVecF) < 0;
-
-            candidates.push({
-                t,
-                worldHit: worldHit.clone(),
-                distToCamera,
-                isFrontFacing,
-            });
-        }
-    });
-
-    if (!candidates.length) {
-        updateRayDebug(rayOrigin, rayDir, null, center);
-        return null;
-    }
-
-    // Sort by distance
-    candidates.sort((a, b) => a.distToCamera - b.distToCamera);
-
-    // Prefer front-facing
-    let best = candidates[0];
-    for (const c of candidates) {
-        if (c.isFrontFacing) {
-            best = c;
-            break;
-        }
-    }
-
-    // Compute local position (relative to globe center, in local space)
-    // This is needed for translation - the actual point on the sphere surface
-    const localPoint = scratchVecC.copy(best.worldHit);
-    root.worldToLocal(localPoint);
-
-    // For localDir, we normalize to get unit direction from center
-    const localDir = localPoint.clone().normalize();
-
-    updateRayDebug(rayOrigin, rayDir, best.worldHit, center);
-
-    return {
-        worldPoint: best.worldHit.clone(),
-        localPoint: localPoint.clone(),
-        localDir: localDir,
-        distance: best.distToCamera,
-        radius: radius, // Store radius for translation
-    };
+function coneHeightMulFromSlider01(u) {
+    const clamped = THREE.MathUtils.clamp(+u || 0, 0, 1);
+    const k = CONE_HEIGHT_MAX / CONE_HEIGHT_MIN;
+    return CONE_HEIGHT_MIN * Math.pow(k, clamped);
 }
 
-function logGlobeTransforms() {
-    const rows = [];
-    globeRoots.forEach((root, idx) => {
-        if (!root) return;
-        root.updateMatrixWorld(true);
-        root.getWorldPosition(scratchVecA);
-        root.getWorldScale(scratchScale);
-        scratchEuler.setFromQuaternion(root.quaternion, 'XYZ');
-        rows.push({
-            Globe: idx + 1,
-            PosX_m: toFixed(scratchVecA.x, 0),
-            PosY_m: toFixed(scratchVecA.y, 0),
-            PosZ_m: toFixed(scratchVecA.z, 0),
-            RotX_deg: toFixed(THREE.MathUtils.radToDeg(scratchEuler.x), 2),
-            RotY_deg: toFixed(THREE.MathUtils.radToDeg(scratchEuler.y), 2),
-            RotZ_deg: toFixed(THREE.MathUtils.radToDeg(scratchEuler.z), 2),
-            Scale: toFixed((scratchScale.x + scratchScale.y + scratchScale.z) / 3, 2),
-        });
-    });
-
-    if (rows.length) {
-        console.table(rows);
-    } else {
-        console.warn('No globes registered in globeRoots.');
-    }
-}
-
-function getActiveGlobeCenter(target = scratchCenter) {
-    const root = globeRoots[activeGlobeIndex];
-    if (!root) {
-        return null;
-    }
-    root.updateMatrixWorld(true);
-    root.getWorldPosition(target);
-    return target;
-}
-
-function getEllipsoidRadiiForRoot(root, target = scratchRadii) {
-    if (!root) {
-        return null;
-    }
-    root.updateMatrixWorld(true);
-    target.set(
-        itowns.ellipsoidSizes.x,
-        itowns.ellipsoidSizes.y,
-        itowns.ellipsoidSizes.z
+function slider01FromConeHeightMul(mul) {
+    const clamped = THREE.MathUtils.clamp(
+        +mul || 1.0,
+        CONE_HEIGHT_MIN,
+        CONE_HEIGHT_MAX,
     );
-    root.getWorldScale(scratchScale);
-    target.multiply(scratchScale);
-    return target;
+    const k = CONE_HEIGHT_MAX / CONE_HEIGHT_MIN;
+    return Math.log(clamped / CONE_HEIGHT_MIN) / Math.log(k);
 }
 
-function getActiveEllipsoidRadii(target = scratchRadii) {
-    return getEllipsoidRadiiForRoot(globeRoots[activeGlobeIndex], target);
+// Slider u in [0,1]  →  radius in meters (log / exponential mapping)
+function radiusFromSlider01(u) {
+    const clamped = THREE.MathUtils.clamp(+u || 0, 0, 1);
+    const k = VIEW_RADIUS_MAX / VIEW_RADIUS_MIN;
+    return VIEW_RADIUS_MIN * Math.pow(k, clamped);
 }
 
-function getEllipsoidRadiusAlong(direction, root = globeRoots[activeGlobeIndex]) {
-    const radii = getEllipsoidRadiiForRoot(root, scratchRadii);
-    if (!radii) {
-        return EARTH_RADIUS;
-    }
-    scratchVecC.copy(direction);
-    const lengthSq = scratchVecC.lengthSq();
-    if (!lengthSq) {
-        return (radii.x + radii.y + radii.z) / 3;
-    }
-    scratchVecC.multiplyScalar(1 / Math.sqrt(lengthSq));
-    if (root) {
-        root.getWorldQuaternion(scratchQuat);
-        scratchQuat.invert();
-        scratchVecC.applyQuaternion(scratchQuat);
-    }
-    const invA2 = 1 / (radii.x * radii.x);
-    const invB2 = 1 / (radii.y * radii.y);
-    const invC2 = 1 / (radii.z * radii.z);
-    const denom = Math.sqrt(
-        scratchVecC.x * scratchVecC.x * invA2 +
-        scratchVecC.y * scratchVecC.y * invB2 +
-        scratchVecC.z * scratchVecC.z * invC2
-    );
-    if (!Number.isFinite(denom) || denom <= 0) {
-        return (radii.x + radii.y + radii.z) / 3;
-    }
-    return 1 / denom;
+// Radius in meters  →  slider u in [0,1]
+function slider01FromRadius(rMeters) {
+    const clamped = THREE.MathUtils.clamp(+rMeters || VIEW_RADIUS_MIN,
+        VIEW_RADIUS_MIN, VIEW_RADIUS_MAX);
+    const k = VIEW_RADIUS_MAX / VIEW_RADIUS_MIN;
+    return Math.log(clamped / VIEW_RADIUS_MIN) / Math.log(k);
 }
 
-function updateDebugReadout() {
-    if (!debugReadout) {
-        return;
-    }
-    const lines = [];
-    globeRoots.forEach((root, idx) => {
-        if (!root) return;
-        root.updateMatrixWorld(true);
-        root.getWorldPosition(scratchVecA);
-        scratchEuler.setFromQuaternion(root.quaternion, 'XYZ');
-        lines.push(
-            `Globe ${idx + 1} | pos (${scratchVecA.x.toFixed(0)}, ${scratchVecA.y.toFixed(0)}, ${scratchVecA.z.toFixed(0)}) | rot (${THREE.MathUtils.radToDeg(scratchEuler.x).toFixed(1)}, ${THREE.MathUtils.radToDeg(scratchEuler.y).toFixed(1)}, ${THREE.MathUtils.radToDeg(scratchEuler.z).toFixed(1)}) | scale ${root.scale.x.toFixed(2)}`
-        );
-    });
-    debugReadout.textContent = lines.length ? lines.join('\n') : 'No globes registered';
-}
-
-function getCameraDistance() {
-    const center = getActiveGlobeCenter(scratchCenter);
-    if (!center) {
-        return getActiveGlobeRadius() + MIN_SURFACE_OFFSET;
-    }
-    const dist = camera.position.distanceTo(center);
-    return dist || getActiveGlobeRadius() + MIN_SURFACE_OFFSET;
-}
-
-function getGlobeRadiusForRoot(root) {
-    if (!root) {
-        return EARTH_RADIUS;
-    }
-    root.updateMatrixWorld(true);
-    root.getWorldScale(scratchScale);
-    return EARTH_RADIUS * (scratchScale.x + scratchScale.y + scratchScale.z) / 3;
-}
-
-function getActiveGlobeRadius() {
-    return getGlobeRadiusForRoot(globeRoots[activeGlobeIndex]);
-}
-
-function getDynamicMinDistance() {
-    const center = getActiveGlobeCenter(scratchCenter);
-    if (!center) {
-        return getActiveGlobeRadius() + MIN_SURFACE_OFFSET;
-    }
-    scratchVecC.copy(camera.position).sub(center);
-    const dirLen = scratchVecC.length();
-    if (!dirLen) {
-        return getActiveGlobeRadius() + MIN_SURFACE_OFFSET;
-    }
-    scratchVecC.multiplyScalar(1 / dirLen);
-    const radius = getEllipsoidRadiusAlong(scratchVecC);
-    return radius + MIN_SURFACE_OFFSET;
-}
-
-function getSurfaceDistanceToCamera(distanceOverride, directionVector) {
-    let dirSource = directionVector ? scratchVecC.copy(directionVector) : null;
-    if (!dirSource) {
-        const center = getActiveGlobeCenter(scratchCenter);
-        if (!center) {
-            return MIN_SURFACE_OFFSET;
-        }
-        dirSource = scratchVecC.copy(camera.position).sub(center);
-    }
-    let dirLen = dirSource.length();
-    if (!dirLen) {
-        dirSource.set(0, 1, 0);
-        dirLen = 1;
-    }
-    dirSource.multiplyScalar(1 / dirLen);
-    const radius = getEllipsoidRadiusAlong(dirSource);
-    const dist = distanceOverride !== undefined ? distanceOverride : dirLen;
-    return Math.max(dist - radius, MIN_SURFACE_OFFSET);
-}
-
-function getZoomRatio() {
-    const dist = getCameraDistance();
-    const minDist = getDynamicMinDistance();
-    if (MAX_CAMERA_DISTANCE === minDist) {
-        return 0;
-    }
-    return THREE.MathUtils.clamp(
-        (dist - minDist) / (MAX_CAMERA_DISTANCE - minDist),
-        0,
-        1
-    );
-}
-
-function getRotationScale() {
-    const ratio = getZoomRatio();
-    return THREE.MathUtils.lerp(0.35, 1, Math.pow(ratio, 0.6));
-}
-
-function getRotationDegreesPerPixel() {
-    return ROTATION_SPEED_DEG_PER_PX * getRotationScale();
-}
-
-function getRotationButtonStep() {
-    return ROTATION_BUTTON_BASE_STEP * getRotationScale();
-}
-
-function getMoveFactor() {
-    const ratio = getZoomRatio();
-    const adaptiveScale = 0.15 + 0.85 * Math.pow(ratio, 0.7);
-    const dist = getCameraDistance();
-    return (dist / 4000) * adaptiveScale;
-}
-function wrapLongitude(deg) {
-    let value = deg % 360;
-    if (value < 0) {
-        value += 360;
-    }
-    return value;
-}
-
-function clampLat(lat) {
-    return THREE.MathUtils.clamp(lat, -MAX_LATITUDE_DEG, MAX_LATITUDE_DEG);
-}
-
-function applyGlobeOrientation(index) {
-    const root = globeRoots[index];
-    const state = globeStates[index];
-    if (!root || !state) {
-        return;
-    }
-    const yawRad = THREE.MathUtils.degToRad(state.lon);
-    const pitchRad = THREE.MathUtils.degToRad(state.lat);
-    quatTilt.setFromAxisAngle(AXIS_X, pitchRad);
-    quatSpin.setFromAxisAngle(AXIS_Z, yawRad);
-    root.quaternion.copy(quatTilt).multiply(quatSpin);
-    root.updateMatrixWorld(true);
-}
-
-// -----------------------------------------------------------------------------
-// 5. Independent rotation per globe (tile loading follows orientation)
-// -----------------------------------------------------------------------------
-
-// Rotate a globe in degrees using turntable style (camera axes)
-function rotateGlobe(index, dLonDeg, dLatDeg) {
-    const root = globeRoots[index];
-    if (!root) return;
-
-    root.updateMatrixWorld(true);
-
-    // Use camera's view-space axes for turntable rotation
-    const cameraUp = scratchVecA.set(0, 1, 0).applyQuaternion(camera.quaternion);
-    const cameraRight = scratchVecB.set(1, 0, 0).applyQuaternion(camera.quaternion);
-
-    // Convert degrees to radians
-    const yawRad = THREE.MathUtils.degToRad(dLonDeg);
-    const pitchRad = THREE.MathUtils.degToRad(dLatDeg);
-
-    // Horizontal rotation (longitude) around camera up axis
-    quatSpin.setFromAxisAngle(cameraUp, -yawRad);
-
-    // Vertical rotation (latitude) around camera right axis
-    quatTilt.setFromAxisAngle(cameraRight, pitchRad);
-
-    // Apply rotations using premultiply (world space)
-    root.quaternion.premultiply(quatTilt);
-    root.quaternion.premultiply(quatSpin);
-    root.quaternion.normalize();
-
-    root.updateMatrixWorld(true);
-    view.notifyChange(camera);
-    view.notifyChange(root);
-    updateDebugReadout();
-}
-
-function moveGlobe(index, deltaX, deltaY) {
-    const root = globeRoots[index];
-    if (!root) return;
-
-    const moveFactor = getMoveFactor();
-    camera.getWorldDirection(scratchForward);
-    scratchRight.crossVectors(scratchForward, camera.up).normalize();
-    scratchUp.copy(camera.up).normalize();
-
-    root.position.addScaledVector(scratchRight, -deltaX * moveFactor);
-    root.position.addScaledVector(scratchUp, deltaY * moveFactor);
-    root.updateMatrixWorld(true);
-    view.notifyChange(camera);
-    view.notifyChange(root);
-    updateDebugReadout();
-}
-
-function zoomCamera(multiplier) {
-    if (!Number.isFinite(multiplier) || multiplier <= 0) {
-        return;
-    }
-    const globeCenter = getActiveGlobeCenter(scratchCenter);
-    if (!globeCenter) {
-        return;
-    }
-    scratchVecB.copy(camera.position).sub(globeCenter);
-    let length = scratchVecB.length();
-    if (!length) {
-        length = getDynamicMinDistance();
-        scratchVecB.set(0, -1, 0);
-    }
-    const minDistance = getDynamicMinDistance();
-    if (length < minDistance) {
-        length = minDistance;
-        scratchVecB.setLength(length);
-    }
-    const zoomDir = multiplier > 1 ? 1 : -1;
-    const zoomAmount = Math.abs(multiplier - 1);
-    const surfaceDist = getSurfaceDistanceToCamera(length, scratchVecB);
-    const normalizedSurfaceRatio = THREE.MathUtils.clamp(surfaceDist / length, 0, 1);
-    const zoomRatio = MIN_ZOOM_RATIO + (MAX_ZOOM_RATIO - MIN_ZOOM_RATIO) * Math.pow(zoomAmount, 0.85);
-    let step = surfaceDist * zoomRatio * (0.4 + 0.6 * normalizedSurfaceRatio);
-    step = Math.max(step, surfaceDist * 0.01);
-    const remaining = zoomDir < 0 ? Math.max(length - minDistance, 0) : MAX_CAMERA_DISTANCE - length;
-    if (remaining <= 0) {
-        return;
-    }
-    step = Math.min(step, Math.max(remaining * 0.8, MIN_SURFACE_OFFSET * 0.25));
-    if (step <= 0) {
-        return;
-    }
-    length = THREE.MathUtils.clamp(length + zoomDir * step, minDistance, MAX_CAMERA_DISTANCE);
-    scratchVecB.setLength(length);
-    camera.position.copy(globeCenter).add(scratchVecB);
-    cameraTarget.copy(globeCenter);
-    camera.lookAt(globeCenter);
-    camera.updateMatrixWorld(true);
-    view.notifyChange(camera);
-}
-// -----------------------------------------------------------------------------
-// 6. Minimal UI + active state indicator
-// -----------------------------------------------------------------------------
-
-const controlPanels = [];
-const statusPanel = document.createElement('div');
-Object.assign(statusPanel.style, {
+const PANEL_BASE_STYLE = {
     position: 'absolute',
-    top: '12px',
-    right: '12px',
-    padding: '12px',
-    background: 'rgba(0, 0, 0, 0.72)',
+    zIndex: 100,
+    background: '#171b2833',
+    border: '1px solid #2e344a',
+    borderRadius: '12px',
+    padding: '14px 16px',
     color: '#fff',
-    fontFamily: 'monospace',
-    fontSize: '12px',
-    borderRadius: '6px',
-    zIndex: '1000',
-    pointerEvents: 'none'
-});
-
-const statusTitle = document.createElement('div');
-statusTitle.textContent = 'Interaction';
-statusTitle.style.fontWeight = 'bold';
-statusTitle.style.marginBottom = '6px';
-statusPanel.appendChild(statusTitle);
-
-const activeRow = document.createElement('div');
-activeRow.style.marginBottom = '6px';
-activeRow.innerHTML = 'Active globe: <span id="activeGlobeLabel">1</span>';
-statusPanel.appendChild(activeRow);
-const activeGlobeLabel = activeRow.querySelector('#activeGlobeLabel');
-
-debugReadout = document.createElement('pre');
-Object.assign(debugReadout.style, {
-    margin: '0',
-    fontSize: '11px',
-    whiteSpace: 'pre-wrap',
-});
-statusPanel.appendChild(debugReadout);
-
-const controlsInfo = document.createElement('div');
-controlsInfo.style.marginTop = '8px';
-controlsInfo.innerHTML = '<b>Controls</b><br>L-Drag: Move<br>R-Drag: Rotate<br>Wheel: Zoom<br>Space: Switch Globe';
-statusPanel.appendChild(controlsInfo);
-
-const statusButtons = document.createElement('div');
-Object.assign(statusButtons.style, {
-    marginTop: '10px',
-    pointerEvents: 'auto',
+    fontFamily: 'Inter, system-ui, sans-serif',
+    fontSize: '13px',
+    minWidth: '240px',
+    maxWidth: '270px',
     display: 'flex',
     flexDirection: 'column',
-    gap: '6px'
+    gap: '10px',
+    boxShadow: '0 14px 40px rgba(0,0,0,0.35)',
+    backdropFilter: 'blur(12px)',
+};
+const UI_BUTTON_STYLE = 'padding:7px 12px;border-radius:6px;background:transparent;color:inherit;font-size:12px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;cursor:pointer;';
+const TOGGLE_LABEL_STYLE = 'display:flex;align-items:center;gap:10px;font-size:13px;';
+const TOGGLE_TEXT_STYLE = 'flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+const UI_STYLE_TAG_ID = 'itowns-road-ui-styles';
+
+function applyPanelStyle(element, overrides = {}) {
+    Object.assign(element.style, PANEL_BASE_STYLE, overrides);
+}
+
+function ensureUIPanelStyles() {
+    if (document.getElementById(UI_STYLE_TAG_ID)) return;
+    const style = document.createElement('style');
+    style.id = UI_STYLE_TAG_ID;
+    style.textContent = `
+    .itowns-ui-panel button {
+        border: 1px solid #2e344a;
+        background: rgba(58,61,79,0.45);
+        color: #f4f7ff;
+        transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .itowns-ui-panel button:hover {
+        background: rgba(85, 101, 138, 0.7);
+        border-color: #55618c;
+    }
+    .itowns-ui-panel button:active {
+        background: #6573b5;
+        border-color: #8797d5;
+    }
+    .itowns-ui-panel button.is-active {
+        background: #5e6dd0;
+        border-color: #8ea0ff;
+        box-shadow: 0 0 12px rgba(102, 141, 255, 0.4);
+        color: #fff;
+    }
+    .itowns-ui-panel input[type="checkbox"] {
+        appearance: none;
+        width: 17px;
+        height: 17px;
+        border-radius: 4px;
+        border: 1px solid #4d5063;
+        background: rgba(255,255,255,0.08);
+        transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.25s ease;
+        cursor: pointer;
+    }
+    .itowns-ui-panel input[type="checkbox"]:hover {
+        border-color: #8aa4ff;
+        box-shadow: 0 0 6px rgba(122, 149, 255, 0.35);
+    }
+    .itowns-ui-panel input[type="checkbox"]:checked {
+        background: linear-gradient(135deg,#65c1ff,#5b7cff);
+        border-color: #86b8ff;
+        box-shadow: 0 0 8px rgba(87, 143, 255, 0.5);
+    }
+    .itowns-ui-panel input[type="range"] {
+        -webkit-appearance: none;
+        width: 100%;
+        height: 6px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.22);
+        outline: none;
+        cursor: pointer;
+    }
+    .itowns-ui-panel input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid #8fb4ff;
+        background: #fff;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    .itowns-ui-panel input[type="range"]:hover::-webkit-slider-thumb {
+        transform: scale(1.08);
+        border-color: #a7c6ff;
+    }
+    .itowns-ui-panel input[type="range"]::-moz-range-thumb {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid #8fb4ff;
+        background: #fff;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    .itowns-ui-panel input[type="range"]:hover::-moz-range-thumb {
+        transform: scale(1.08);
+        border-color: #a7c6ff;
+    }
+    `;
+    document.head.appendChild(style);
+}
+
+applyPersistedRoadGlobalState();
+
+// ----------------------------------------------------------------------------
+// 2b. SPHERE / STEREOGRAPHIC PROJECTION STATE
+// ----------------------------------------------------------------------------
+
+const SphereProjectionState = {
+    controller: null,
+};
+const StereoUniforms = {
+    uSphereCenter: { value: new THREE.Vector3() },
+    uSphereR: { value: 1.0 },
+    uProjectionStrength: { value: 0.0 },
+    uCameraPos: { value: new THREE.Vector3() },
+    uCullBackfaces: { value: 0.0 },
+    uSphereBasis: { value: new THREE.Matrix3() },
+
+    // precomputed uniforms:
+    uTwoR: { value: 0.0 },                // 2 * R
+    uInv2R: { value: 0.0 },               // 1 / (2 * R)
+    uCameraDirFromCenter: { value: new THREE.Vector3(0, 0, 1) }, // normalized
+
+    // cone + mode
+    uProjectionSurface: { value: 0.0 },             // 0 = sphere, 1 = cone
+    uConeApex: { value: new THREE.Vector3() },      // apex in world
+    uConeAxis: { value: new THREE.Vector3(0, 1, 0) }, // unit axis (upwards)
+    uConeSlope: { value: 1.0 },                     // k = r_ground / hc
+    uConeTopZ: { value: 1.0 },                      // distance apex → cone top (along axis)
+
+    // NEW: view radius / ground center for cone
+    uViewRadius: { value: 1000.0 },
+    uGroundCenter: { value: new THREE.Vector3() },
+};
+
+const RoadFatLines = new Set();
+
+// Cone visualization mode:
+//  - true  → truncated from sphere zenith down to GROUND (bottom radius = viewRadius)
+//  - false → truncated from sphere zenith down to SPHERE BOTTOM (your current behaviour)
+const CONE_TRUNCATE_AT_GROUND = true;
+
+function makeSphereController(view, {
+    radius = 1000,
+    offset01 = 1.0,
+    opacity = 0.5,
+    color = 0xff0000,
+    coneHeightMul = 1.0,
+} = {}) {
+    const DEBUG_SPHERE_CTL = false;
+    const logSphere = (...args) => {
+        if (!DEBUG_SPHERE_CTL) return;
+        console.log('[SphereCtl]', ...args);
+    };
+
+
+    // external clamp/diagnostic cylinder (the green one from addClampDebugCylinder)
+    let externalClampCylinder = null;
+
+    logSphere('init controller', { radius, offset01, opacity, color });
+
+    // --- Sphere mesh ---------------------------------------------------------
+    const sphereGeom = new THREE.SphereGeometry(1, 32, 16);
+    const sphereMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+    });
+    const sphereMesh = new THREE.Mesh(sphereGeom, sphereMat);
+    sphereMesh.renderOrder = 20;
+    view.scene.add(sphereMesh);
+
+    // --- Cone mesh (created as cylinder; we control radii) -------------------
+
+    let displayMode = 'sphere'; // 'sphere' | 'cone'
+
+    // --- Parameter state: view radius + intersection ------------------------
+    // Use the incoming radius/offset as the initial sphere configuration, then
+    // derive an equivalent "view radius" so initial visuals stay unchanged.
+    const baseF = Math.sqrt(Math.max(1e-6, 2.0 * offset01 - offset01 * offset01));
+    const initialViewRadius = radius * baseF;
+
+    const state = {
+        groundECEF: new THREE.Vector3(),
+        hasGround: false,
+
+        // UI-level parameters
+        viewRadius: initialViewRadius, // intersection circle radius on ground
+        intersection01: offset01,      // controls intersection angle
+
+        sphereRadius: radius,
+        coneHeightMul: 1.0,
+    };
+
+    function updateTransform() {
+        if (!state.hasGround) {
+            logSphere('updateTransform skipped, no ground yet');
+            return;
+        }
+        logSphere('updateTransform begin', {
+            viewRadius: state.viewRadius,
+            intersection01: state.intersection01,
+        });
+
+        const normal = state.groundECEF.clone().normalize();
+        const G = state.groundECEF; // ground intersection center
+
+        // Slider value u in [0,1]
+        const u = THREE.MathUtils.clamp(state.intersection01, 0, 1);
+
+        // Non-linear mapping for finer control near 0
+        const epsT = 1e-4;
+        const tUnit = u * u; // [0,1]
+        const t = epsT + (1.0 - 2.0 * epsT) * tUnit; // t in (0,1)
+
+        // View radius (meters)
+        const rView = Math.max(1e-3, state.viewRadius);
+
+        // f(t) = sqrt(2t - t^2) → relation between sphere radius and intersection radius
+        const f = Math.sqrt(Math.max(1e-6, 2.0 * t - t * t));
+
+        // Sphere radius such that intersection radius is exactly rView
+        const R = rView / f;
+        state.sphereRadius = R;
+
+        // Sphere center height above ground: h = R * (1 - t)
+        const h = R * (1.0 - t);
+        const C = G.clone().addScaledVector(normal, h);
+
+        // Sphere zenith
+        const Z = C.clone().addScaledVector(normal, R);
+
+        // --- Sphere placement ------------------------------------------------
+        sphereMesh.position.copy(C);
+        sphereMesh.scale.setScalar(R);
+        sphereMesh.lookAt(new THREE.Vector3(0, 0, 0));
+        sphereMesh.rotateX(Math.PI / 2);
+
+        // --- Shared cone/infinite-cone quantities ----------------------------
+        // Distance from sphere top to ground: P = R(2 - t)
+        const P = R * (2.0 - t);
+
+        // Apex depth below ground so that the ground intersection circle
+        // has radius rView: d^2 = h_c * R * (1 - t)  =>  h_c = d^2 / (R(1 - t))
+        const eps = 1e-6;
+        const denom = Math.max(eps, R * (1.0 - t));
+        const hc = (rView * rView) / denom;  // distance ground → apex
+
+        // Total distance from zenith Z down to apex
+        const totalHeight = P + hc;
+
+        // Radius at zenith in the infinite cone
+        const minRadius = 1e-3;
+        let rTopInfinite = rView * (totalHeight / hc);
+        rTopInfinite = Math.max(minRadius, rTopInfinite);
+
+        // --- Choose cone truncation mode -------------------------------------
+        let cylTopRadius;
+        let cylBottomRadius;
+        let cylHeight;
+        let cylCenter;
+        let cylAxisDir;
+
+        const up = new THREE.Vector3(0, 1, 0);
+
+        // Cone defined by apex below ground and radius rView at ground.
+        // r(h) = rView * (1 + h / hc), where h is height above ground.
+        const k = state.coneHeightMul || 1.0;
+
+        const hTopDefault = P;                      // sphere zenith height
+        const hTop = THREE.MathUtils.clamp(
+            k * hTopDefault,
+            CONE_HEIGHT_MIN * hTopDefault,
+            CONE_HEIGHT_MAX * hTopDefault,
+        );
+
+        const rTop = rView * (1.0 + hTop / hc);     // radius at new top height
+
+        cylBottomRadius = Math.max(minRadius, rView);
+        cylTopRadius = Math.max(minRadius, rTop);
+        cylHeight = hTop;
+        cylCenter = G.clone().addScaledVector(normal, 0.5 * hTop);
+        cylAxisDir = normal;
+
+        const q = new THREE.Quaternion().setFromUnitVectors(up, cylAxisDir);
+
+        // --- External green cone / truncated cone ----------------------------
+        if (externalClampCylinder) {
+            if (externalClampCylinder.geometry) {
+                externalClampCylinder.geometry.dispose();
+            }
+            externalClampCylinder.geometry = new THREE.CylinderGeometry(
+                cylTopRadius,
+                cylBottomRadius,
+                cylHeight,
+                48,
+                1,
+                true // openEnded
+            );
+
+            externalClampCylinder.quaternion.copy(q);
+            externalClampCylinder.position.copy(cylCenter);
+            externalClampCylinder.visible = (displayMode === 'cone');
+            externalClampCylinder.updateMatrixWorld(true);
+        }
+
+        // Infinite cone definition for the shader
+        // apex: below ground along -normal
+        const apex = G.clone().addScaledVector(normal, -hc);
+
+        // slope: radius at ground / height of ground above apex
+        const kSlope = rView / hc;
+
+        // z coordinate of cone top in apex-frame
+        const zTop = hc + hTop;
+
+        StereoUniforms.uConeApex.value.copy(apex);
+        StereoUniforms.uConeAxis.value.copy(normal);
+        StereoUniforms.uConeSlope.value = kSlope;
+        StereoUniforms.uConeTopZ.value = zTop;
+
+        StereoUniforms.uViewRadius.value = rView;
+        StereoUniforms.uGroundCenter.value.copy(G);
+
+
+
+        view.notifyChange(true);
+    }
+
+    return {
+        mesh: sphereMesh,
+        // coneMesh,
+        hasGround() {
+            return state.hasGround;
+        },
+        setGroundFromWorld(vec3) {
+            state.groundECEF.copy(vec3);
+            state.hasGround = true;
+            logSphere('setGroundFromWorld', vec3.toArray());
+            updateTransform();
+        },
+        // "Radius" slider → view radius (intersection radius on ground)
+        setRadius(meters) {
+            state.viewRadius = Math.max(1, +meters);
+            logSphere('setRadius', state.viewRadius);
+            updateTransform();
+        },
+        // "Offset" slider → intersection parameter (angle)
+        setOffset01(t) {
+            state.intersection01 = Math.min(1, Math.max(0, +t));
+            logSphere('setOffset01', state.intersection01);
+            updateTransform();
+        },
+        setOpacity(a) {
+            const clamped = Math.min(1, Math.max(0, +a));
+            sphereMat.opacity = clamped;
+            // coneMat.opacity = clamped;
+            // change the opactity of the external cylinder too
+            if (externalClampCylinder && externalClampCylinder.material) {
+                externalClampCylinder.material.opacity = clamped;
+            }
+            logSphere('setOpacity', clamped);
+            view.notifyChange(true);
+        },
+        setColor(hex) {
+            sphereMat.color.set(hex);
+            // coneMat.color.set(hex);
+            logSphere('setColor', hex);
+            view.notifyChange(true);
+        },
+        setConeHeightMul(mul) {
+            const k = THREE.MathUtils.clamp(+mul || 1.0, CONE_HEIGHT_MIN, CONE_HEIGHT_MAX);
+            state.coneHeightMul = k;
+            logSphere('setConeHeightMul', k);
+            updateTransform();
+        },
+        // setDisplayMode(mode) {
+        //     displayMode = mode === 'cone' ? 'cone' : 'sphere';
+        //     sphereMesh.visible = displayMode === 'sphere';
+        //     coneMesh.visible = displayMode === 'cone';
+        //     logSphere('setDisplayMode', displayMode);
+        //     view.notifyChange(true);
+        // },
+        setDisplayMode(mode) {
+            displayMode = mode === 'cone' ? 'cone' : 'sphere';
+            const showCone = (displayMode === 'cone');
+            sphereMesh.visible = !showCone;
+            // We stop using the internal red cone for now.
+            // coneMesh.visible = false;
+            if (externalClampCylinder) {
+                externalClampCylinder.visible = showCone;
+            }
+
+            // Tell the shader which surface to use
+            StereoUniforms.uProjectionSurface.value = (displayMode === 'cone') ? 1.0 : 0.0;
+
+            logSphere('setDisplayMode', displayMode);
+            view.notifyChange(true);
+        },
+        // NEW: allow attaching the green debug cylinder from outside
+        attachClampCylinder(mesh) {
+            externalClampCylinder = mesh;
+            if (externalClampCylinder) {
+                externalClampCylinder.frustumCulled = false;
+                externalClampCylinder.visible = (displayMode === 'cone');
+            }
+            // Re-apply transform so it jumps to the current ground point
+            updateTransform();
+        },
+        getDisplayMode() {
+            return displayMode;
+        },
+    };
+}
+
+
+function initSphereAtLookAt(view, sphereCtl) {
+    const c = view.controls.getLookAtCoordinate();
+    const groundECEF = c.as(view.referenceCrs);
+    sphereCtl.setGroundFromWorld(new THREE.Vector3(groundECEF.x, groundECEF.y, groundECEF.z));
+}
+
+function addClampDebugCylinder(view) {
+
+    const geometry = new THREE.CylinderGeometry(0, 1, 1, 24, 1, true);
+    // const geometry = new THREE.CylinderGeometry(1000, 0, 8000, 24, 1, true);
+    const material = new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        transparent: true,
+        opacity: 0.8,
+        side: THREE.BackSide,
+        depthWrite: false,
+        depthTest: false,
+        // wireframe: true,
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = 'ClampDebugCone';
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 40;
+
+    view.scene.add(mesh);
+    view.notifyChange(true);
+
+    if (typeof window !== 'undefined') {
+        window.DebugClampCylinder = mesh;
+    }
+
+    // Attach to sphere controller so it follows all updates
+    if (SphereProjectionState.controller &&
+        typeof SphereProjectionState.controller.attachClampCylinder === 'function') {
+        SphereProjectionState.controller.attachClampCylinder(mesh);
+    }
+
+    console.log('[Debug] Clamp cone added');
+}
+
+function createSphereWidget(view, sphereCtl, init = { radius: 1000, offset01: 1.0, opacity: 0.5, coneHeightMul: 1.0 }) {
+    ensureUIPanelStyles();
+    const panel = document.createElement('div');
+    applyPanelStyle(panel, { left: '10px', top: '10px', minWidth: '280px' });
+    panel.classList.add('itowns-ui-panel');
+    const state = {
+        radius: Number.isFinite(init.radius) ? init.radius : 1000,
+        offset01: Number.isFinite(init.offset01) ? init.offset01 : 1.0,
+        opacity: Number.isFinite(init.opacity) ? init.opacity : 0.5,
+        coneHeightMul: Number.isFinite(init.coneHeightMul) ? init.coneHeightMul : 1.0,
+    };
+
+    const radiusSlider01 = slider01FromRadius(state.radius);
+    const offsetSlider01 = THREE.MathUtils.clamp(state.offset01, 0, 1);
+
+    const coneHeightSlider01 = slider01FromConeHeightMul(state.coneHeightMul);
+
+    panel.innerHTML = `
+        <div style="font-weight:bold; font-size:14px; border-bottom:1px solid #555; padding-bottom:5px;">
+            Projection Controls
+        </div>
+        <div style="display:flex; gap:8px; margin:6px 0 4px 0;">
+            <button id="sp-mode-sphere" style="${UI_BUTTON_STYLE}flex:1;" class="is-active">Sphere</button>
+            <button id="sp-mode-cone" style="${UI_BUTTON_STYLE}flex:1;">Cone</button>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>View Radius (m)</span>
+                <span id="sp-rv">${state.radius.toFixed(0)} m</span>
+            </div>
+            <!-- radius slider is now 0..1, mapped logarithmically to meters -->
+            <input id="sp-r" type="range" min="0" max="1" step="0.001" value="${radiusSlider01}">
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Intersection</span>
+                <span id="sp-ov">${state.offset01.toFixed(3)}</span>
+            </div>
+            <!-- intersection slider also 0..1 with finer steps -->
+            <input id="sp-o" type="range" min="0" max="1" step="0.001" value="${offsetSlider01}">
+        </div>
+                <div id="sp-cone-height-wrapper" style="display:none; margin-top:6px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Cone height</span>
+                <span id="sp-chv">${state.coneHeightMul.toFixed(2)}×</span>
+            </div>
+            <input id="sp-ch" type="range" min="0" max="1" step="0.001" value="${coneHeightSlider01}">
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Opacity</span>
+                <span id="sp-av">${state.opacity.toFixed(2)}</span>
+            </div>
+            <input id="sp-a" type="range" min="0" max="1" step="0.01" value="${state.opacity}">
+        </div>
+        <div style="display:flex; gap:8px; margin-top:4px;">
+            <button id="sp-center" style="${UI_BUTTON_STYLE}flex:1;">Place @ center</button>
+            <button id="sp-pick" style="${UI_BUTTON_STYLE}flex:1;">Pick (S)</button>
+        </div>
+    `;
+    document.body.appendChild(panel);
+
+    const radiusInput = panel.querySelector('#sp-r');
+    const offsetInput = panel.querySelector('#sp-o');
+    const opacityInput = panel.querySelector('#sp-a');
+    const radiusLabel = panel.querySelector('#sp-rv');
+    const offsetLabel = panel.querySelector('#sp-ov');
+    const opacityLabel = panel.querySelector('#sp-av');
+    const btnCenter = panel.querySelector('#sp-center');
+    const btnPick = panel.querySelector('#sp-pick');
+
+    const btnModeSphere = panel.querySelector('#sp-mode-sphere');
+    const btnModeCone = panel.querySelector('#sp-mode-cone');
+
+    const coneHeightWrapper = panel.querySelector('#sp-cone-height-wrapper');
+    const coneHeightInput = panel.querySelector('#sp-ch');
+    const coneHeightLabel = panel.querySelector('#sp-chv');
+
+    const persistSphereState = () => {
+        RoadUIStorage.save({
+            sphereRadius: state.radius,
+            sphereOffset: state.offset01,
+            sphereOpacity: state.opacity,
+            coneHeightMul: state.coneHeightMul, // NEW
+        });
+    };
+
+
+    sphereCtl.setRadius(state.radius);
+    sphereCtl.setOffset01(state.offset01);
+    sphereCtl.setOpacity(state.opacity);
+
+    const updateModeButtons = () => {
+        const mode = sphereCtl.getDisplayMode ? sphereCtl.getDisplayMode() : 'sphere';
+        btnModeSphere.classList.toggle('is-active', mode === 'sphere');
+        btnModeCone.classList.toggle('is-active', mode === 'cone');
+        coneHeightWrapper.style.display = (mode === 'cone') ? 'block' : 'none';
+    };
+
+    btnModeSphere.addEventListener('click', () => {
+        if (sphereCtl.setDisplayMode) {
+            sphereCtl.setDisplayMode('sphere');
+        }
+        updateModeButtons();
+    });
+
+    btnModeCone.addEventListener('click', () => {
+        if (sphereCtl.setDisplayMode) {
+            sphereCtl.setDisplayMode('cone');
+        }
+        updateModeButtons();
+    });
+
+    // Initialize button state
+    updateModeButtons();
+
+    radiusInput.addEventListener('input', (e) => {
+        const u = parseFloat(e.target.value);        // 0..1
+        state.radius = radiusFromSlider01(u);        // meters
+        radiusLabel.textContent = `${state.radius.toFixed(0)} m`;
+        sphereCtl.setRadius(state.radius);
+        persistSphereState();
+    });
+
+    offsetInput.addEventListener('input', (e) => {
+        state.offset01 = parseFloat(e.target.value); // 0..1 slider value
+        offsetLabel.textContent = state.offset01.toFixed(3);
+        sphereCtl.setOffset01(state.offset01);
+        persistSphereState();
+    });
+
+    coneHeightInput.addEventListener('input', (e) => {
+        const uHeight = parseFloat(e.target.value);
+        state.coneHeightMul = coneHeightMulFromSlider01(uHeight);
+        coneHeightLabel.textContent = `${state.coneHeightMul.toFixed(2)}×`;
+        sphereCtl.setConeHeightMul(state.coneHeightMul);
+        persistSphereState();
+    });
+
+    // Double-click to reset multiplier back to 1×
+    coneHeightInput.addEventListener('dblclick', () => {
+        state.coneHeightMul = 1.0;
+        const uReset = slider01FromConeHeightMul(state.coneHeightMul);
+        coneHeightInput.value = uReset.toString();
+        coneHeightLabel.textContent = `${state.coneHeightMul.toFixed(2)}×`;
+        sphereCtl.setConeHeightMul(state.coneHeightMul);
+        persistSphereState();
+    });
+
+    opacityInput.addEventListener('input', (e) => {
+        state.opacity = parseFloat(e.target.value);
+        opacityLabel.textContent = state.opacity.toFixed(2);
+        sphereCtl.setOpacity(state.opacity);
+        persistSphereState();
+    });
+
+    btnCenter.addEventListener('click', () => {
+        const c = view.controls.getLookAtCoordinate();
+        const g = c.as(view.referenceCrs);
+        sphereCtl.setGroundFromWorld(new THREE.Vector3(g.x, g.y, g.z));
+    });
+
+    let buttonPicking = false;
+    let keyPicking = false;
+    const updatePickVisual = () => {
+        const active = buttonPicking || keyPicking;
+        btnPick.classList.toggle('is-active', active);
+    };
+
+    btnPick.addEventListener('click', () => {
+        buttonPicking = !buttonPicking;
+        updatePickVisual();
+    });
+
+    viewerDiv.addEventListener('keydown', (event) => {
+        if (event.key === 's') {
+            keyPicking = true;
+            updatePickVisual();
+        }
+    });
+    viewerDiv.addEventListener('keyup', (event) => {
+        if (event.key === 's') {
+            keyPicking = false;
+            updatePickVisual();
+        }
+    });
+
+    viewerDiv.addEventListener('click', (event) => {
+        if (!(buttonPicking || keyPicking)) return;
+        const picked = view.getPickingPositionFromDepth(view.eventToViewCoords(event));
+        if (picked) sphereCtl.setGroundFromWorld(picked);
+        if (keyPicking) {
+            keyPicking = false;
+            updatePickVisual();
+        }
+    });
+
+    updatePickVisual();
+    return panel;
+}
+
+const sphereCtl = makeSphereController(view, {
+    radius: 1000,
+    offset01: 1.0,
+    opacity: 0.54,
+    color: 0xff0000,
+    coneHeightMul: 1.0,
+});
+SphereProjectionState.controller = sphereCtl;
+
+view.addEventListener(itowns.GLOBE_VIEW_EVENTS.GLOBE_INITIALIZED, () => {
+    initSphereAtLookAt(view, sphereCtl);
+    createSphereWidget(view, sphereCtl, getPersistedSphereSettings());
+    addClampDebugCylinder(view);
 });
 
-const frameActiveBtn = document.createElement('button');
-frameActiveBtn.textContent = 'Frame Active';
-frameActiveBtn.onclick = () => frameGlobe(activeGlobeIndex);
-statusButtons.appendChild(frameActiveBtn);
+function makeStereoProjectMaterial(mat) {
+    if (!mat || mat.userData?.stereoPatched) return mat;
 
-const frameBothBtn = document.createElement('button');
-frameBothBtn.textContent = 'Frame Both';
-frameBothBtn.onclick = frameAllGlobes;
-statusButtons.appendChild(frameBothBtn);
+    mat.onBeforeCompile = (shader) => {
+        shader.uniforms.uSphereCenter = StereoUniforms.uSphereCenter;
+        shader.uniforms.uSphereR = StereoUniforms.uSphereR;
+        shader.uniforms.uProjectionStrength = StereoUniforms.uProjectionStrength;
+        shader.uniforms.uCameraPos = StereoUniforms.uCameraPos;
+        shader.uniforms.uCullBackfaces = StereoUniforms.uCullBackfaces;
+        shader.uniforms.uSphereBasis = StereoUniforms.uSphereBasis;
 
-const rayToggle = createCheckboxRow('Show ray debug', checked => setRayDebugVisible(checked));
-rayToggle.style.pointerEvents = 'auto';
-statusButtons.appendChild(rayToggle);
 
-const sphereToggle = createCheckboxRow('Use sphere picking', checked => setSpherePickingEnabled(checked));
-sphereToggle.style.pointerEvents = 'auto';
-statusButtons.appendChild(sphereToggle);
+        // precomputed uniforms
+        shader.uniforms.uTwoR = StereoUniforms.uTwoR;
+        shader.uniforms.uInv2R = StereoUniforms.uInv2R;
+        shader.uniforms.uCameraDirFromCenter = StereoUniforms.uCameraDirFromCenter;
 
-statusPanel.appendChild(statusButtons);
-document.body.appendChild(statusPanel);
+        // cone + mode uniforms
+        shader.uniforms.uProjectionSurface = StereoUniforms.uProjectionSurface;
+        shader.uniforms.uConeApex = StereoUniforms.uConeApex;
+        shader.uniforms.uConeAxis = StereoUniforms.uConeAxis;
+        shader.uniforms.uConeSlope = StereoUniforms.uConeSlope;
+        shader.uniforms.uConeTopZ = StereoUniforms.uConeTopZ;
 
-function createCheckboxRow(label, onToggle) {
-    const wrapper = document.createElement('label');
-    wrapper.style.display = 'flex';
-    wrapper.style.alignItems = 'center';
-    wrapper.style.gap = '4px';
-    wrapper.style.fontSize = '10px';
-    wrapper.style.marginTop = '4px';
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.style.margin = '0';
-    input.onchange = () => onToggle(input.checked);
-    const span = document.createElement('span');
-    span.textContent = label;
-    wrapper.appendChild(input);
-    wrapper.appendChild(span);
-    return wrapper;
+        shader.uniforms.uViewRadius = StereoUniforms.uViewRadius;     // NEW
+        shader.uniforms.uGroundCenter = StereoUniforms.uGroundCenter;   // NEW
+
+
+        let vs = shader.vertexShader;
+        const inject = /* glsl */`
+uniform vec3  uSphereCenter;
+uniform float uSphereR;
+uniform float uProjectionStrength;
+uniform vec3  uCameraPos;
+uniform float uCullBackfaces;
+uniform mat3  uSphereBasis;
+
+// Precomputed uniforms:
+uniform float uTwoR;              // 2 * uSphereR
+uniform float uInv2R;             // 1 / (2 * uSphereR)
+uniform vec3  uCameraDirFromCenter; // normalized (camera - center)
+
+// NEW: cone + surface mode
+uniform float uProjectionSurface;   // 0 = sphere, 1 = cone
+uniform vec3  uConeApex;
+uniform vec3  uConeAxis;           // unit vector
+uniform float uConeSlope;          // k = r_ground / hc
+uniform float uConeTopZ;           // z_t (apex → top center along axis)
+
+uniform float uViewRadius;      // NEW
+uniform vec3  uGroundCenter;    // NEW
+
+// Helper: is stereographic projection actually active?
+bool isProjectionEnabled() {
+  return (uProjectionStrength > 0.0 && uSphereR > 0.0);
 }
 
-// const debugPanel = document.createElement('div');
-// debugPanel.style.position = 'absolute';
-// debugPanel.style.top = '150px';
-// debugPanel.style.right = '10px';
-// debugPanel.style.padding = '8px 12px';
-// debugPanel.style.background = 'rgba(0,0,0,0.55)';
-// debugPanel.style.color = 'white';
-// debugPanel.style.fontFamily = 'sans-serif';
-// debugPanel.style.fontSize = '11px';
-// debugPanel.style.borderRadius = '4px';
-// debugPanel.style.zIndex = '1000';
 
-// const debugTitle = document.createElement('div');
-// debugTitle.textContent = 'Debug helpers';
-// debugTitle.style.fontWeight = 'bold';
-// debugTitle.style.marginBottom = '4px';
-// debugPanel.appendChild(debugTitle);
+// ----------------- Sphere mapping -----------------
 
-// debugPanel.appendChild(createCheckboxRow('Show axes helpers', checked => setAxesVisible(checked)));
-// debugPanel.appendChild(createCheckboxRow('Show wire spheres', checked => setWireframeVisible(checked)));
 
-// const debugButtons = document.createElement('div');
-// debugButtons.style.marginTop = '6px';
+vec3 terrainToSphere(vec3 s) {
+  // h = 0.5 - s.y
+  float h = 0.5 - s.y;
 
-// const logButton = document.createElement('button');
-// logButton.textContent = 'Log transforms';
-// logButton.style.marginRight = '4px';
-// logButton.onclick = logGlobeTransforms;
-// debugButtons.appendChild(logButton);
+  // squared radius in xz-plane
+  float r2 = s.x * s.x + s.z * s.z;
 
-// const refreshButton = document.createElement('button');
-// refreshButton.textContent = 'Refresh readout';
-// refreshButton.onclick = updateDebugReadout;
-// debugButtons.appendChild(refreshButton);
+  // denominator: h^2 - 2h + r2 + 1
+  float h2   = h * h;
+  float denom = h2 - 2.0 * h + r2 + 1.0;
 
-// debugPanel.appendChild(debugButtons);
+  // common scale factor for x and z
+  float k = (1.0 - h) / denom;
 
-// debugReadout = document.createElement('pre');
-// debugReadout.style.marginTop = '6px';
-// debugReadout.style.fontSize = '10px';
-// debugReadout.style.whiteSpace = 'pre-wrap';
-// debugReadout.style.userSelect = 'text';
-// debugReadout.textContent = 'Waiting for globe data...';
-// debugPanel.appendChild(debugReadout);
+  // y uses the same denom but different formula
+  float y = 0.5 - r2 / denom;
 
-// document.body.appendChild(debugPanel);
-// updateDebugReadout();
+  return vec3(k * s.x, y, k * s.z);
+}
 
-function updateActiveGlobeUI() {
-    controlPanels.forEach((panel, idx) => {
-        if (!panel) return;
-        panel.style.outline = idx === activeGlobeIndex ? '2px solid #00ffd1' : '1px solid rgba(255,255,255,0.2)';
+vec3 inverseStereoProject(vec3 wp) {
+  if (!isProjectionEnabled()) {
+    return wp;
+  }
+
+  float R = uSphereR;
+  vec3  C = uSphereCenter;
+
+  // Vector from center to world point
+  vec3 v  = wp - C;
+  float d2 = dot(v, v);
+  float R2 = R * R;
+
+  // Inside or on the sphere: no reprojection
+  if (d2 <= R2) {
+    return wp;
+  }
+
+  // (C - wp) / (2R) = -v / (2R) = -v * uInv2R
+  vec3 s = transpose(uSphereBasis) * (-v * uInv2R);
+  vec3 q = terrainToSphere(s);
+  return C - (uSphereBasis * (q * uTwoR));
+}
+
+
+// ----------------- Cone mapping -----------------
+// Cone:
+//  apex at uConeApex
+//  axis uConeAxis (unit, apex→up)
+//  slope k = uConeSlope, with r = k * z in apex-frame
+//  top center at z = uConeTopZ in apex-frame
+//
+// For a world point wp, we parametrize the line from top center
+// to wp, and intersect it with the infinite cone surface.
+
+vec3 inverseConeProject(vec3 wp) {
+  if (!isProjectionEnabled()) {
+    return wp;
+  }
+
+  // --- Do NOT project inside the view radius on the ground plane ----
+  // Project wp onto the ground plane through the local vertical (uConeAxis)
+  vec3 axis = normalize(uConeAxis);
+  vec3 vGC = wp - uGroundCenter;
+  float hAlong = dot(vGC, axis);
+  vec3 radialGC = vGC - hAlong * axis;  // component in the ground plane
+  float r2Ground = dot(radialGC, radialGC);
+  float vr2 = uViewRadius * uViewRadius;
+
+  // Small epsilon so points exactly on the circle are treated as "inside"
+  if (r2Ground <= vr2 + 1e-6) {
+    return wp;
+  }
+
+
+  vec3 apex = uConeApex;
+  float k   = uConeSlope;
+  float zTop = uConeTopZ;
+
+  // Position relative to apex
+  vec3 relP = wp - apex;
+  float zP  = dot(relP, axis);
+  vec3 radialP = relP - zP * axis;
+  float rP2 = dot(radialP, radialP);
+
+  float dz = zP - zTop;
+  float k2 = k * k;
+
+  // Quadratic in lambda:  λ^2 rP^2 = k^2 (zTop + λ dz)^2
+  float A = rP2 - k2 * dz * dz;
+  float B = -2.0 * k2 * zTop * dz;
+  float C = -k2 * zTop * zTop;
+
+  float eps = 1e-6;
+  float D = B * B - 4.0 * A * C;
+  if (D < eps) {
+    return wp;
+  }
+
+  float sqrtD = sqrt(max(D, 0.0));
+  float lambda;
+
+  if (abs(A) < eps) {
+    if (abs(B) < eps) {
+      return wp;
+    }
+    lambda = -C / B;
+  } else {
+    float l1 = (-B + sqrtD) / (2.0 * A);
+    float l2 = (-B - sqrtD) / (2.0 * A);
+    bool l1Pos = (l1 > 0.0);
+    bool l2Pos = (l2 > 0.0);
+    if (l1Pos && l2Pos) {
+      lambda = min(l1, l2);
+    } else if (l1Pos) {
+      lambda = l1;
+    } else if (l2Pos) {
+      lambda = l2;
+    } else {
+      lambda = max(l1, l2);
+    }
+  }
+
+  // Intersection in apex-frame
+  vec3 radialI = lambda * radialP;
+  float zI = zTop + lambda * dz;
+  vec3 relI = radialI + zI * axis;
+
+  return apex + relI;
+}
+
+// ----------------- Surface selection wrapper -----------------
+
+vec3 applyProjection(vec3 wp) {
+  if (!isProjectionEnabled()) {
+    return wp;
+  }
+
+  if (uProjectionSurface > 0.5) {
+    // Cone mode
+    return inverseConeProject(wp);
+  } else {
+    // Sphere mode
+    return inverseStereoProject(wp);
+  }
+}
+
+
+// ----------------- Hemisphere culling (sphere only) ----------
+
+    // bool shouldCullHemisphere(vec3 originalWp){
+    //   if (uCullBackfaces <= 0.5 || uProjectionStrength <= 0.0) return false;
+    //   float R = uSphereR;
+    //   if (R <= 0.0) return false;
+    //   float d = distance(originalWp, uSphereCenter);
+    //   if (d <= R + 1e-3) return false;
+    //   vec3 normal = normalize(originalWp - uSphereCenter);
+    //   vec3 camDirFromCenter = normalize(uCameraPos - uSphereCenter);
+    //   return dot(normal, camDirFromCenter) > 0.0;
+    // }
+
+bool shouldCullHemisphere(vec3 originalWp, vec3 projectedP) {
+  if (uCullBackfaces <= 0.5 || !isProjectionEnabled()) {
+    return false;
+  }
+
+   // ---------------- SPHERE MODE ----------------
+ if (uProjectionSurface < 0.5) {
+  float R = uSphereR;
+  if (R <= 0.0) {
+    return false;
+  }
+
+  vec3 C = uSphereCenter;
+
+  // 1) Use ORIGINAL position to decide if the point is inside the sphere.
+  //    Anything inside (or on) should NEVER be culled: these are your
+  //    "unprojected" roads on the terrain, which must remain visible.
+  vec3 v  = originalWp - C;
+  float d2 = dot(v, v);
+  float R2 = R * R;
+  float eps = 1e-3;
+  if (d2 <= R2 + eps) {
+    return false;
+  }
+
+  // 2) For points outside the sphere (i.e., actually projected onto it),
+  //    use the projected point to test which hemisphere we are on.
+  
+  vec3 n = projectedP - C; // outward normal; magnitude doesn't matter for sign
+
+  // Pre-normalized on CPU:
+  vec3 camDirFromCenter = uCameraDirFromCenter;
+
+
+  // outward normal faces the camera → outside hemisphere → HIDE it
+  // (so we see the inside).
+  return dot(n, camDirFromCenter) > 0.0;
+}
+
+  // ---------------- CONE MODE ----------------
+  // Keep the same spirit:
+  //  - never cull anything inside the view radius
+  //  - for projected points, use the cone top center as reference and
+  //    cull the side facing the camera.
+
+  // 1) Inside view radius on ground? Never cull  (we do not project there).
+  vec3 axis = normalize(uConeAxis);
+  vec3 vGC = originalWp - uGroundCenter;
+  float hAlong = dot(vGC, axis);
+  vec3 radialGC = vGC - hAlong * axis; // in local "ground" plane
+  float r2Ground = dot(radialGC, radialGC);
+  float vr2 = uViewRadius * uViewRadius;
+
+  if (r2Ground <= vr2 + 1e-6) {
+    return false;
+  }
+
+  // 2) Estimate cone surface normal at the *projected* point
+  //    using the gradient of r - k z = 0:
+  //      n ∝ radialDir - k * axis
+  vec3 apex = uConeApex;
+  float kCone = uConeSlope;
+
+  vec3 ap = projectedP - apex;
+  float zC  = dot(ap, axis);
+  vec3 radialC = ap - zC * axis;
+  float rLen2 = dot(radialC, radialC);
+  if (rLen2 < 1e-8) {
+    // very close to the axis → normal ill-defined, don't cull
+    return false;
+  }
+
+  float rLen = sqrt(rLen2);
+  vec3 radialDir = radialC / rLen;
+  vec3 nSurf = normalize(radialDir - kCone * axis);  // outward normal
+
+  // 3) Compare normal to camera direction from the point
+  vec3 camDir = normalize(uCameraPos - projectedP);
+
+  // As for the sphere: if the outward normal faces the camera,
+  // we hide that fragment/vertex to only see the "inside" of the cone.
+  return dot(nSurf, camDir) > 0.0;
+}
+  `;
+
+        if (mat.isLineMaterial === true) {
+            vs = inject + vs;
+            vs = vs.replace(
+                /vec4\s+start\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceStart\s*,\s*1\.0\s*\)\s*;/,
+                `
+    vec3 wpStart = (modelMatrix * vec4( instanceStart, 1.0 )).xyz;
+    vec3 pStart  = applyProjection(wpStart);
+    vec4 start;
+  `
+            );
+            vs = vs.replace(
+                /vec4\s+end\s*=\s*modelViewMatrix\s*\*\s*vec4\s*\(\s*instanceEnd\s*,\s*1\.0\s*\)\s*;/,
+                `
+    vec3 wpEnd = (modelMatrix * vec4( instanceEnd, 1.0 )).xyz;
+    vec3 pEnd  = applyProjection(wpEnd);
+    vec4 end;
+    bool cullSegment = shouldCullHemisphere(wpStart, pStart) || shouldCullHemisphere(wpEnd, pEnd);
+    if (cullSegment) {
+      start = vec4(1e9, 1e9, 1e9, 1.0);
+      end   = vec4(1e9, 1e9, 1e9, 1.0);
+    } else {
+      start = viewMatrix * vec4( pStart, 1.0 );
+      end   = viewMatrix * vec4( pEnd, 1.0 );
+    }
+  `
+            );
+            shader.vertexShader = vs;
+        } else if (mat.isLineBasicMaterial === true) {
+            shader.vertexShader =
+                inject +
+                shader.vertexShader.replace(
+                    '#include <project_vertex>',
+                    `
+      vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      vec3 p  = applyProjection(wp);
+      if (shouldCullHemisphere(wp, p)) {
+        gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
+      } else {
+        vec4 mv = viewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `
+                );
+        } else if (mat.isMeshBasicMaterial || mat.isMeshPhongMaterial || mat.isMeshStandardMaterial) {
+            shader.vertexShader =
+                inject +
+                shader.vertexShader.replace(
+                    '#include <project_vertex>',
+                    `
+      vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      vec3 p  = applyProjection(wp);
+      if (shouldCullHemisphere(wp, p)) {
+        gl_Position = vec4(1e9, 1e9, 1e9, 1.0);
+      } else {
+        vec4 mv = viewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `
+                );
+        } else {
+            console.warn('Stereo projection: unsupported material type', mat?.type);
+        }
+
+        mat.userData = mat.userData || {};
+        mat.userData.shader = shader;
+    };
+
+    mat.userData = mat.userData || {};
+    mat.userData.stereoPatched = true;
+    return mat;
+}
+
+// ----------------------------------------------------------------------------
+// 3. GEOMETRY SANITIZATION
+// ----------------------------------------------------------------------------
+
+function isFinite3(x, y, z) {
+    return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z);
+}
+
+function isNearOrigin(x, y, z) {
+    return Math.abs(x) < 1.0 && Math.abs(y) < 1.0 && Math.abs(z) < 1.0;
+}
+
+const _scratchVecA = new THREE.Vector3();
+const _scratchVecB = new THREE.Vector3();
+const _scratchMatrix = new THREE.Matrix4();
+const _scratchRootInverse = new THREE.Matrix4();
+const _scratchRoadRootInverse = new THREE.Matrix4();
+
+const _rendererSize = new THREE.Vector2();
+let _lastRendererWidth = -1;
+let _lastRendererHeight = -1;
+const _tmpCamDir = new THREE.Vector3(); // scratch
+
+const RoadTileAnchors = new Map();
+const tempColor = new THREE.Color();
+const RoadMaterialCache = new Map();
+const _basisUp = new THREE.Vector3();
+const _basisRef = new THREE.Vector3();
+const _basisX = new THREE.Vector3();
+const _basisZ = new THREE.Vector3();
+
+function resetProcessedFlag(root) {
+    root.traverse((node) => {
+        if (node.userData) {
+            delete node.userData.hasProcessedFatLine;
+            if (node.userData.isFatLine && node.parent) {
+                node.parent.remove(node);
+                RoadFatLines.delete(node);
+            }
+        }
     });
-    if (activeGlobeLabel) {
-        activeGlobeLabel.textContent = `${activeGlobeIndex + 1}`;
-    }
 }
 
-function setActiveGlobe(index) {
-    if (globeRoots[index]) {
-        activeGlobeIndex = index;
-        updateActiveGlobeUI();
-    }
-}
+function appendGeometryToGroup(sourceGeom, group, transformMatrix) {
+    if (!sourceGeom) return;
+    const posAttr = sourceGeom.attributes?.position;
+    if (!posAttr) return;
 
-function createControlsForGlobe(index, label, xPx) {
-    const container = document.createElement('div');
-    container.style.position = 'absolute';
-    container.style.top = '10px';
-    container.style.left = `${xPx}px`;
-    container.style.padding = '6px';
-    container.style.background = 'rgba(0,0,0,0.55)';
-    container.style.color = 'white';
-    container.style.fontFamily = 'sans-serif';
-    container.style.fontSize = '11px';
-    container.style.borderRadius = '4px';
-    container.style.zIndex = '1000';
-    container.style.outline = '1px solid rgba(255,255,255,0.2)';
+    const colAttr = sourceGeom.attributes?.color;
+    const indexAttr = sourceGeom.index;
 
-    const title = document.createElement('div');
-    title.textContent = label;
-    title.style.fontWeight = 'bold';
-    title.style.marginBottom = '4px';
-    container.appendChild(title);
-
-    function makeButton(text, onClick) {
-        const b = document.createElement('button');
-        b.textContent = text;
-        b.style.margin = '2px';
-        b.style.fontSize = '10px';
-        b.onclick = onClick;
-        return b;
+    if (!colAttr && group.hasColors) {
+        group.hasColors = false;
+        group.colors.length = 0;
     }
 
-    // N
-    const rowN = document.createElement('div');
-    rowN.appendChild(makeButton('N', () => rotateGlobe(index, 0, +getRotationButtonStep())));
-    container.appendChild(rowN);
+    const useColors = group.hasColors && !!colAttr;
+    const useTransform = !!transformMatrix;
 
-    // W / E
-    const rowWE = document.createElement('div');
-    rowWE.appendChild(makeButton('W', () => rotateGlobe(index, -getRotationButtonStep(), 0)));
-    rowWE.appendChild(makeButton('E', () => rotateGlobe(index, +getRotationButtonStep(), 0)));
-    container.appendChild(rowWE);
+    const pushSegment = (aIdx, bIdx) => {
+        const ax = posAttr.getX(aIdx);
+        const ay = posAttr.getY(aIdx);
+        const az = posAttr.getZ(aIdx);
 
-    // S
-    const rowS = document.createElement('div');
-    rowS.appendChild(makeButton('S', () => rotateGlobe(index, 0, -getRotationButtonStep())));
-    container.appendChild(rowS);
+        const bx = posAttr.getX(bIdx);
+        const by = posAttr.getY(bIdx);
+        const bz = posAttr.getZ(bIdx);
 
-    document.body.appendChild(container);
-    controlPanels[index] = container;
-    updateActiveGlobeUI();
-}
+        if (!isFinite3(ax, ay, az) || !isFinite3(bx, by, bz)) return;
+        if (isNearOrigin(ax, ay, az) && isNearOrigin(bx, by, bz)) return;
 
-// Controls for each globe
-createControlsForGlobe(0, 'Globe 1', 10);
-createControlsForGlobe(1, 'Globe 2', 140);
+        if (useTransform) {
+            _scratchVecA.set(ax, ay, az).applyMatrix4(transformMatrix);
+            _scratchVecB.set(bx, by, bz).applyMatrix4(transformMatrix);
+            group.positions.push(
+                _scratchVecA.x, _scratchVecA.y, _scratchVecA.z,
+                _scratchVecB.x, _scratchVecB.y, _scratchVecB.z
+            );
+        } else {
+            group.positions.push(ax, ay, az, bx, by, bz);
+        }
 
-// -----------------------------------------------------------------------------
-// 7. Keyboard toggle between active globes
-// -----------------------------------------------------------------------------
+        if (useColors) {
+            group.colors.push(
+                colAttr.getX(aIdx), colAttr.getY(aIdx), colAttr.getZ(aIdx),
+                colAttr.getX(bIdx), colAttr.getY(bIdx), colAttr.getZ(bIdx)
+            );
+        }
+    };
 
-function handleKeyDown(event) {
-    if (event.code === 'Space') {
-        event.preventDefault();
-        setActiveGlobe(activeGlobeIndex === 0 ? 1 : 0);
-    }
-}
-window.addEventListener('keydown', handleKeyDown);
-
-viewerDiv.tabIndex = 0;
-viewerDiv.style.outline = 'none';
-viewerDiv.focus({ preventScroll: true });
-
-// -----------------------------------------------------------------------------
-// 8. Mouse interactions for move (left drag) and rotate (right drag)
-// -----------------------------------------------------------------------------
-
-/**
- * Get the camera's view-space "up" direction in world space.
- * For turntable rotation, this is the vertical axis of the view plane.
- */
-function getCameraViewUp(target = scratchVecA) {
-    // Camera's local Y axis in world space
-    target.set(0, 1, 0).applyQuaternion(camera.quaternion);
-    return target;
-}
-
-/**
- * Get the camera's view-space "right" direction in world space.
- */
-function getCameraViewRight(target = scratchVecB) {
-    target.set(1, 0, 0).applyQuaternion(camera.quaternion);
-    return target;
-}
-
-/**
- * Turntable rotation: rotates globe while keeping its north-south axis
- * in the plane perpendicular to the camera's view direction.
- * 
- * - Horizontal mouse movement: rotates around camera's UP axis (Y in view space)
- * - Vertical mouse movement: rotates around camera's RIGHT axis (X in view space)
- * 
- * This ensures the globe's poles always appear vertically aligned in the view.
- */
-function performTurntableRotation(root, dx, dy, anchorWorldPoint) {
-    if (!root) return;
-
-    root.updateMatrixWorld(true);
-    const globeCenter = root.getWorldPosition(scratchCenter);
-
-    // Calculate rotation sensitivity based on distance and globe size
-    const dist = anchorWorldPoint
-        ? camera.position.distanceTo(anchorWorldPoint)
-        : camera.position.distanceTo(globeCenter);
-    const fovRad = THREE.MathUtils.degToRad(camera.fov);
-    const visibleHeight = 2 * dist * Math.tan(fovRad / 2);
-    const pixelSize = visibleHeight / Math.max(1, viewerDiv.clientHeight);
-
-    // Get globe radius for angular conversion
-    const radius = getActiveGlobeRadius();
-
-    // Convert pixel movement to radians
-    const radiansPerPixel = pixelSize / radius;
-
-    // Get camera's view-space axes in world coordinates
-    // These define the turntable rotation axes
-    const cameraUp = getCameraViewUp(scratchVecA);      // Y in view space
-    const cameraRight = getCameraViewRight(scratchVecB); // X in view space
-
-    // Horizontal drag: rotate around camera's up axis
-    // Dragging right moves the surface to the left (globe spins opposite to drag)
-    const yawAngle = -dx * radiansPerPixel;
-    quatSpin.setFromAxisAngle(cameraUp, yawAngle);
-
-    // Vertical drag: rotate around camera's right axis  
-    // Dragging down moves the surface down (globe tilts in same direction as drag)
-    const pitchAngle = dy * radiansPerPixel;
-    quatTilt.setFromAxisAngle(cameraRight, pitchAngle);
-
-    // Apply rotations in world space using premultiply
-    // Order: first pitch (tilt), then yaw (spin)
-    root.quaternion.premultiply(quatTilt);
-    root.quaternion.premultiply(quatSpin);
-    root.quaternion.normalize();
-
-    root.updateMatrixWorld(true);
-}
-
-/**
- * Translation: moves the globe so the grabbed surface point follows the cursor.
- * Uses a plane intersection approach for stable dragging.
- */
-function performTranslation(root, mouseX, mouseY) {
-    if (!root || !interactionState.hasWorldGrab) return;
-
-    root.updateMatrixWorld(true);
-
-    // Get the current world position of the grabbed point
-    // We stored localPoint directly (actual position, not just direction)
-    // For sphere mode, localDir is normalized so we need to scale by radius
-    // For ellipsoid mode, localDir is normalized so we scale by ellipsoid radii
-    const grabbedLocal = scratchVecD.copy(interactionState.grabbedLocalDir);
-
-    if (pickingSettings.useSphere) {
-        // For sphere, scale by the sphere radius
-        const radius = getGlobeRadiusForRoot(root);
-        // localDir is normalized, so multiply by radius to get surface point
-        root.getWorldScale(scratchScale);
-        // The radius already includes scale, but localDir is in local unscaled space
-        grabbedLocal.multiplyScalar(EARTH_RADIUS);
+    if (indexAttr) {
+        for (let i = 0; i < indexAttr.count; i += 2) {
+            pushSegment(indexAttr.getX(i), indexAttr.getX(i + 1));
+        }
     } else {
-        // Scale by ellipsoid radii to get actual local position on surface
-        const radii = scratchRadii.set(
-            itowns.ellipsoidSizes.x,
-            itowns.ellipsoidSizes.y,
-            itowns.ellipsoidSizes.z
-        );
-        grabbedLocal.x *= radii.x;
-        grabbedLocal.y *= radii.y;
-        grabbedLocal.z *= radii.z;
+        for (let i = 0; i < posAttr.count; i += 2) {
+            pushSegment(i, i + 1);
+        }
     }
-
-    // Transform to world space - this is where the grabbed point currently is
-    const currentGrabbedWorld = scratchVecE.copy(grabbedLocal).applyMatrix4(root.matrixWorld);
-
-    // Create a ray from camera through current mouse position
-    const rect = viewerDiv.getBoundingClientRect();
-    pointerNDC.x = ((mouseX - rect.left) / rect.width) * 2 - 1;
-    pointerNDC.y = -((mouseY - rect.top) / rect.height) * 2 + 1;
-    raycaster.setFromCamera(pointerNDC, camera);
-
-    // Intersect the ray with a plane that:
-    // - passes through the current grabbed world position
-    // - faces the camera (perpendicular to view direction)
-    camera.getWorldDirection(scratchVecA);
-
-    // Plane equation: normal · (point - planePoint) = 0
-    // Ray: origin + t * direction
-    // Solving for t: t = (normal · (planePoint - origin)) / (normal · direction)
-    const planeNormal = scratchVecA; // camera look direction (pointing away from camera)
-    const planePoint = currentGrabbedWorld;
-
-    scratchVecB.copy(planePoint).sub(raycaster.ray.origin);
-    const denom = planeNormal.dot(raycaster.ray.direction);
-
-    if (Math.abs(denom) < 1e-10) {
-        // Ray is parallel to plane, fallback to screen-space translation
-        return performScreenSpaceTranslation(root, mouseX, mouseY);
-    }
-
-    const t = planeNormal.dot(scratchVecB) / denom;
-
-    if (t < 0) {
-        // Intersection is behind camera, fallback
-        return performScreenSpaceTranslation(root, mouseX, mouseY);
-    }
-
-    // Calculate the intersection point - this is where we want the grabbed point to be
-    const targetWorld = scratchVecC.copy(raycaster.ray.direction).multiplyScalar(t).add(raycaster.ray.origin);
-
-    // Move the globe by the difference
-    scratchVecF.copy(targetWorld).sub(currentGrabbedWorld);
-    root.position.add(scratchVecF);
-    root.updateMatrixWorld(true);
 }
 
-/**
- * Fallback screen-space translation when surface is lost.
- */
-function performScreenSpaceTranslation(root, mouseX, mouseY) {
-    if (!root) return;
-
-    const dx = mouseX - interactionState.lastX;
-    const dy = mouseY - interactionState.lastY;
-
-    const dist = getCameraDistance();
-    const fovRad = THREE.MathUtils.degToRad(camera.fov);
-    const visibleHeight = 2 * dist * Math.tan(fovRad / 2);
-    const factor = visibleHeight / Math.max(1, viewerDiv.clientHeight);
-
-    const viewRight = getCameraViewRight(scratchVecA);
-    const viewUp = getCameraViewUp(scratchVecB);
-
-    root.position.addScaledVector(viewRight, dx * factor);
-    root.position.addScaledVector(viewUp, dy * factor);
-    root.updateMatrixWorld(true);
+let rebuildPending = false;
+function rebuildAllRoadTiles() {
+    if (rebuildPending) return;
+    rebuildPending = true;
+    const entries = Array.from(RoadTileAnchors.entries());
+    RoadTileAnchors.clear();
+    for (const [, entry] of entries) {
+        cleanupAnchorEntry(entry);
+        const featureRoot = entry.featureRoot;
+        if (featureRoot) {
+            if (featureRoot.userData) {
+                delete featureRoot.userData.roadTileKey;
+                delete featureRoot.userData.roadAnchor;
+                delete featureRoot.userData.fatLines;
+            }
+            resetProcessedFlag(featureRoot);
+            processRoadTileRoot(featureRoot);
+        }
+    }
+    rebuildPending = false;
 }
 
-function onMouseDown(event) {
-    if (event.button !== 0 && event.button !== 2) {
-        return;
+function createFatLineGeometriesByBatch(sourceGeom, transformMatrix) {
+    const posAttr = sourceGeom?.attributes?.position;
+    const colAttr = sourceGeom?.attributes?.color;
+    const batchAttr = sourceGeom?.attributes?.batchId;
+    const indexAttr = sourceGeom?.index;
+    if (!posAttr) return [];
+
+    const hasColorsAttr = !!colAttr;
+    const hasBatchAttr = !!batchAttr;
+    const groups = new Map();
+
+    function getGroup(batchId) {
+        const key = hasBatchAttr ? batchId : 0;
+        if (!groups.has(key)) {
+            groups.set(key, { positions: [], colors: [] });
+        }
+        return groups.get(key);
     }
 
-    const root = globeRoots[activeGlobeIndex];
-    if (!root) {
-        return;
+    function addSegment(aIdx, bIdx) {
+        const ax = posAttr.getX(aIdx);
+        const ay = posAttr.getY(aIdx);
+        const az = posAttr.getZ(aIdx);
+
+        const bx = posAttr.getX(bIdx);
+        const by = posAttr.getY(bIdx);
+        const bz = posAttr.getZ(bIdx);
+
+        if (!isFinite3(ax, ay, az) || !isFinite3(bx, by, bz)) return;
+        if (isNearOrigin(ax, ay, az) && isNearOrigin(bx, by, bz)) return;
+
+        const batchId = hasBatchAttr ? batchAttr.getX(aIdx) : 0;
+        const group = getGroup(batchId);
+
+        if (transformMatrix) {
+            _scratchVecA.set(ax, ay, az).applyMatrix4(transformMatrix);
+            _scratchVecB.set(bx, by, bz).applyMatrix4(transformMatrix);
+            group.positions.push(
+                _scratchVecA.x, _scratchVecA.y, _scratchVecA.z,
+                _scratchVecB.x, _scratchVecB.y, _scratchVecB.z
+            );
+        } else {
+            group.positions.push(ax, ay, az, bx, by, bz);
+        }
+
+        if (hasColorsAttr) {
+            group.colors.push(
+                colAttr.getX(aIdx), colAttr.getY(aIdx), colAttr.getZ(aIdx),
+                colAttr.getX(bIdx), colAttr.getY(bIdx), colAttr.getZ(bIdx)
+            );
+        }
     }
 
-    // Check if we hit the globe surface
-    const hit = intersectEllipsoid(event.clientX, event.clientY, root);
-
-    // Only start dragging if we hit the surface
-    if (!hit) {
-        return;
-    }
-
-    interactionState.isDragging = true;
-    interactionState.mode = event.button === 2 ? 'rotate' : 'translate';
-    interactionState.lastX = event.clientX;
-    interactionState.lastY = event.clientY;
-    interactionState.hasWorldGrab = true;
-    interactionState.grabbedWorldPoint.copy(hit.worldPoint);
-
-    // Store the local direction for both rotation and translation
-    // localDir is a normalized direction from globe center to surface point
-    if (hit.localDir) {
-        interactionState.grabbedLocalDir.copy(hit.localDir);
-    } else if (hit.localPoint) {
-        // Use localPoint if available, normalize it
-        interactionState.grabbedLocalDir.copy(hit.localPoint).normalize();
+    if (indexAttr) {
+        for (let i = 0; i < indexAttr.count; i += 2) {
+            addSegment(indexAttr.getX(i), indexAttr.getX(i + 1));
+        }
     } else {
-        // Fallback: compute local direction from world point
-        root.worldToLocal(interactionState.grabbedLocalDir.copy(hit.worldPoint));
-        interactionState.grabbedLocalDir.normalize();
+        for (let i = 0; i < posAttr.count; i += 2) {
+            addSegment(i, i + 1);
+        }
     }
 
-    // Store initial quaternion for rotation
-    interactionState.initialQuaternion.copy(root.quaternion);
-
-    event.preventDefault();
+    const results = [];
+    for (const [batchId, data] of groups.entries()) {
+        if (!data.positions.length) continue;
+        const hasValidColors = hasColorsAttr && data.colors.length === data.positions.length;
+        results.push({
+            positions: data.positions.slice(),
+            colors: hasValidColors ? data.colors.slice() : null,
+            hasColors: hasValidColors,
+            batchId: hasBatchAttr ? batchId : null,
+        });
+    }
+    return results;
 }
 
-function onMouseUp() {
-    interactionState.isDragging = false;
-    interactionState.hasWorldGrab = false;
-    interactionState.mode = null;
+function getFeatureTileKey(featureRoot) {
+    const ext = featureRoot?.extent;
+    if (ext && typeof ext === 'object') {
+        if (ext.isExtent || ext.crs) {
+            const west = Number.isFinite(ext.west) ? ext.west : 0;
+            const east = Number.isFinite(ext.east) ? ext.east : 0;
+            const south = Number.isFinite(ext.south) ? ext.south : 0;
+            const north = Number.isFinite(ext.north) ? ext.north : 0;
+            const zoom = Number.isFinite(ext.zoom) ? ext.zoom : 0;
+            const crs = ext.crs || ext.projection || 'unknown';
+            return `${crs}|${west}|${east}|${south}|${north}|${zoom}`;
+        }
+    }
+    return featureRoot ? featureRoot.uuid : null;
 }
 
-function onMouseMove(event) {
-    const root = globeRoots[activeGlobeIndex];
+function cleanupAnchorEntry(entry) {
+    if (!entry) return;
+    const { anchor, fatLines } = entry;
+    if (Array.isArray(fatLines)) {
+        for (const line of fatLines) {
+            if (!line) continue;
+            if (line.parent) {
+                line.parent.remove(line);
+            }
+            RoadFatLines.delete(line);
+        }
+    }
+    if (anchor && anchor.parent) {
+        anchor.parent.remove(anchor);
+    }
+}
 
-    // Update debug visualization on hover
-    if (root && rayDebugState.enabled) {
-        const hoverHit = intersectEllipsoid(event.clientX, event.clientY, root);
-        // Debug is already updated inside intersectEllipsoid
+function cleanupFeatureFatLines(featureRoot) {
+    if (!featureRoot) return;
+    const key = featureRoot.userData?.roadTileKey;
+    if (key && RoadTileAnchors.has(key)) {
+        cleanupAnchorEntry(RoadTileAnchors.get(key));
+        RoadTileAnchors.delete(key);
+    }
+    if (featureRoot.userData) {
+        delete featureRoot.userData.roadAnchor;
+        delete featureRoot.userData.fatLines;
+        delete featureRoot.userData.roadTileKey;
+    }
+}
+
+function syncMaterialResolutions() {
+    for (const mat of RoadMaterialCache.values()) {
+        if (!mat?.resolution) continue;
+        mat.resolution.copy(RoadGlobalState.resolution);
+    }
+}
+
+function applyGlobalStateToMaterials() {
+    for (const mat of RoadMaterialCache.values()) {
+        if (!mat) continue;
+        const base = mat.userData?.baseWidth || 2;
+        mat.linewidth = base * RoadGlobalState.widthMultiplier;
+        mat.worldUnits = RoadGlobalState.useWorldUnits;
+
+        const isDefaultMode = RoadGlobalState.depthTest;
+        mat.depthTest = isDefaultMode;
+        mat.depthWrite = isDefaultMode;
+        mat.transparent = !isDefaultMode;
+        mat.polygonOffset = isDefaultMode;
+        mat.needsUpdate = true;
+
+        mat.needsUpdate = true;
     }
 
-    if (!interactionState.isDragging || !root) {
+    for (const obj of RoadFatLines) {
+        if (!obj) continue;
+        obj.renderOrder = RoadGlobalState.depthTest ? 0 : 999;
+        obj.position.z = RoadGlobalState.altitudeOffset;
+        obj.updateMatrix();
+    }
+
+    notifyRoadLayers();
+    view.notifyChange(true);
+}
+
+function addMeshToGeometryGroups(mesh, groups, transformMatrix) {
+    if (!mesh.geometry) return;
+    const props = getFeatureProperties(mesh);
+    const natureName = props?.nature || 'unknown';
+    const baseWidthNature = ROAD_WIDTH_BASE[natureName] || 2;
+    const color = ROAD_COLOR[natureName] || '#FF00FF';
+    const hasColorAttr = !!mesh.geometry.attributes?.color;
+
+    if (!RoadGlobalState.useIndividualWidths) {
+        const baseWidth = 2;
+        const key = `uniform|${color}|${hasColorAttr ? 1 : 0}`;
+        if (!groups.has(key)) {
+            groups.set(key, {
+                color,
+                positions: [],
+                colors: [],
+                hasColors: hasColorAttr,
+                baseWidth,
+            });
+        }
+        const group = groups.get(key);
+        appendGeometryToGroup(mesh.geometry, group, transformMatrix);
+    } else {
+        const geometries = createFatLineGeometriesByBatch(mesh.geometry, transformMatrix);
+        for (const { positions, colors, hasColors, batchId } of geometries) {
+            const widthFromBatch = (batchId !== null && batchId !== undefined) ? getWidthForBatch(batchId) : undefined;
+            const baseWidth = widthFromBatch || baseWidthNature;
+            const key = `${baseWidth}|${color}|${hasColors ? 1 : 0}`;
+
+            if (!groups.has(key)) {
+                groups.set(key, {
+                    color,
+                    positions: [],
+                    colors: [],
+                    hasColors,
+                    baseWidth,
+                });
+            }
+
+            const group = groups.get(key);
+            group.positions.push(...positions);
+            if (hasColors && colors) {
+                group.colors.push(...colors);
+            } else {
+                group.hasColors = false;
+                group.colors.length = 0;
+            }
+        }
+    }
+
+    const mat = mesh.material;
+    if (mat) {
+        if (Array.isArray(mat)) {
+            mat.forEach((m) => {
+                if (m) m.visible = false;
+            });
+        } else {
+            mat.visible = false;
+        }
+    }
+    mesh.frustumCulled = !RoadGlobalState.disableFrustumCulling;
+    mesh.userData.hasProcessedFatLine = true;
+}
+
+function getRoadMaterial(baseWidth, hasColors, colorHex, isDefaultMode) {
+    const key = `${baseWidth}|${hasColors ? 1 : 0}|${colorHex}|${isDefaultMode ? 1 : 0}`;
+    let material = RoadMaterialCache.get(key);
+    if (!material) {
+        material = new LineMaterial({
+            color: hasColors ? 0xffffff : tempColor.set(colorHex).getHex(),
+            linewidth: baseWidth * RoadGlobalState.widthMultiplier,
+            vertexColors: hasColors,
+            worldUnits: RoadGlobalState.useWorldUnits,
+            dashed: false,
+            alphaToCoverage: false,
+            depthTest: isDefaultMode,
+            depthWrite: isDefaultMode,
+            transparent: !isDefaultMode,
+            resolution: RoadGlobalState.resolution,
+            polygonOffset: isDefaultMode,
+            polygonOffsetFactor: -4,
+            polygonOffsetUnits: -4
+        });
+        material.userData = material.userData || {};
+        material.userData.baseWidth = baseWidth;
+        makeStereoProjectMaterial(material);
+        RoadMaterialCache.set(key, material);
+    }
+    return material;
+}
+
+function createFatLinesFromGroups(featureRoot, targetRoot, groups) {
+    if (!groups || !groups.size) {
         return;
     }
 
-    const dx = event.clientX - interactionState.lastX;
-    const dy = event.clientY - interactionState.lastY;
+    const tileKey = getFeatureTileKey(featureRoot);
+    if (tileKey && RoadTileAnchors.has(tileKey)) {
+        cleanupAnchorEntry(RoadTileAnchors.get(tileKey));
+        RoadTileAnchors.delete(tileKey);
+    } else {
+        cleanupFeatureFatLines(featureRoot);
+    }
+    featureRoot.userData = featureRoot.userData || {};
+    const anchor = new THREE.Group();
+    anchor.name = 'RoadTileAnchor';
+    anchor.matrixAutoUpdate = false;
+    const parentInverse = _scratchRoadRootInverse.copy(RoadFatLineRoot.matrixWorld).invert();
+    anchor.matrix.copy(parentInverse).multiply(targetRoot.matrixWorld);
+    anchor.matrix.decompose(anchor.position, anchor.quaternion, anchor.scale);
+    anchor.updateMatrix();
+    anchor.frustumCulled = !RoadGlobalState.disableFrustumCulling;
+    anchor.userData.isRoadAnchor = true;
+    RoadFatLineRoot.add(anchor);
+    anchor.updateMatrixWorld(true);
+    featureRoot.userData.roadAnchor = anchor;
+    featureRoot.userData.fatLines = [];
 
-    if (interactionState.mode === 'rotate') {
-        performTurntableRotation(root, dx, dy, interactionState.grabbedWorldPoint);
-    } else if (interactionState.mode === 'translate') {
-        performTranslation(root, event.clientX, event.clientY);
+    const isDefaultMode = RoadGlobalState.depthTest;
+
+    for (const group of groups.values()) {
+        if (!group.positions.length) continue;
+        const geometry = new LineSegmentsGeometry();
+        geometry.setPositions(group.positions);
+        if (group.hasColors && group.colors.length === group.positions.length) {
+            geometry.setColors(group.colors);
+        }
+
+        const renderBase = group.baseWidth || 2;
+        const material = getRoadMaterial(renderBase, group.hasColors, group.color, isDefaultMode);
+        const fatLine = new LineSegments2(geometry, material);
+
+        fatLine.renderOrder = isDefaultMode ? 0 : 999;
+        fatLine.userData.isFatLine = true;
+        fatLine.userData.baseWidth = renderBase;
+        fatLine.frustumCulled = !RoadGlobalState.disableFrustumCulling;
+
+        fatLine.position.set(0, 0, RoadGlobalState.altitudeOffset);
+        fatLine.updateMatrixWorld();
+
+        anchor.add(fatLine);
+        featureRoot.userData.fatLines.push(fatLine);
+        RoadFatLines.add(fatLine);
     }
 
-    interactionState.lastX = event.clientX;
-    interactionState.lastY = event.clientY;
+    if (tileKey) {
+        RoadTileAnchors.set(tileKey, {
+            anchor,
+            fatLines: featureRoot.userData.fatLines,
+            sourceRoot: targetRoot,
+            needsSync: true,
+            featureRoot,
+        });
+        featureRoot.userData.roadTileKey = tileKey;
+    }
 
-    view.notifyChange(camera);
-    view.notifyChange(root);
-    updateDebugReadout();
+    view.notifyChange(true);
 }
 
-viewerDiv.addEventListener('contextmenu', event => event.preventDefault());
-viewerDiv.addEventListener('mousedown', onMouseDown);
-window.addEventListener('mouseup', onMouseUp);
-window.addEventListener('mousemove', onMouseMove);
+// ----------------------------------------------------------------------------
+// 4. ROADS LAYER LOGIC
+// ----------------------------------------------------------------------------
 
-function onMouseWheel(event) {
-    event.preventDefault();
-    const delta = event.deltaY !== undefined ? event.deltaY : -event.wheelDelta;
-    const multiplier = delta > 0 ? 1.12 : 0.88;
-    zoomCamera(multiplier);
+const roadsSource = new itowns.WFSSource({
+    url: 'https://data.geopf.fr/wfs/ows?',
+    version: '2.0.0',
+    typeName: 'BDTOPO_V3:troncon_de_route',
+    crs: 'EPSG:4326',
+    format: 'application/json',
+    zoom: { min: 12, max: 15 },
+});
+
+const altitudeDebug = {
+    logged: 0,
+    max: 20,
+};
+
+function logAltitudeIssue(reason, props) {
+    if (altitudeDebug.logged >= altitudeDebug.max) return;
+    altitudeDebug.logged++;
+    console.warn(`[RoadAltitude] ${reason}`, {
+        id: props?.id || props?.ID || props?.nature,
+        nature: props?.nature,
+    });
 }
 
-viewerDiv.addEventListener('wheel', onMouseWheel, { passive: false });
-viewerDiv.addEventListener('DOMMouseScroll', onMouseWheel, { passive: false });
+function resolveBaseCoordinate(ctx) {
+    if (!ctx) return null;
+    const coord = Array.isArray(ctx.coordinates) ? ctx.coordinates[0] : ctx.coordinates;
+    if (!coord) return null;
+    if (coord.isCoordinates) return coord;
+    if (coord.crs) return new itowns.Coordinates(coord.crs, coord.x, coord.y, coord.z || 0);
+    return new itowns.Coordinates('EPSG:4326', coord.x, coord.y, coord.z || 0);
+}
 
-// -----------------------------------------------------------------------------
-// 9. Initial render + debug hooks
-// -----------------------------------------------------------------------------
+const reusableCoord = new itowns.Coordinates('EPSG:4326', 0, 0, 0);
+const demReadMode = (itowns.DEMUtils && (itowns.DEMUtils.PRECISE_READ_Z || itowns.DEMUtils.FAST_READ_Z)) || 0;
+function getRoadBaseAltitude(props, ctx) {
+    const coord = resolveBaseCoordinate(ctx);
+    if (!coord) return 0;
+    const z = Number.isFinite(coord.z) ? coord.z : 0;
 
-view.notifyChange(camera);
+    const tileLayer = view.tileLayer;
+    if (!tileLayer || !itowns.DEMUtils || !coord.isCoordinates) {
+        if (z === 0) logAltitudeIssue('No DEM available, falling back to z=0', props);
+        return z;
+    }
+
+    reusableCoord.copy(coord);
+    const demElevation = itowns.DEMUtils.getElevationValueAt(
+        tileLayer,
+        reusableCoord,
+        demReadMode
+    );
+    if (Number.isFinite(demElevation)) {
+        return demElevation;
+    }
+
+    if (z === 0) logAltitudeIssue('DEM not ready, using fallback altitude', props);
+    return z;
+}
+
+const roadsLayer = new itowns.FeatureGeometryLayer('BDTOPO_Roads', {
+    source: roadsSource,
+    zoom: { min: 12 },
+    mergeFeatures: true,
+    batchId: (properties) => registerRoadFeature(properties),
+    style: {
+        stroke: {
+            color: (props) => ROAD_COLOR[props.nature] || '#FF00FF',
+            base_altitude: (props, ctx) => getRoadBaseAltitude(props, ctx),
+        },
+    },
+});
+roadsLayer.onMeshCreated = (root) => scheduleRoadProcessing(root);
+const roadLayers = [roadsLayer];
+
+function scheduleRoadProcessing(root) {
+    if (!root) return;
+    if (root.userData?.hasQueuedFatLine) return;
+    root.userData = root.userData || {};
+    root.userData.hasQueuedFatLine = true;
+
+    const attemptProcess = () => {
+        if (!root.parent) {
+            requestAnimationFrame(attemptProcess);
+            return;
+        }
+        processRoadTileRoot(root);
+    };
+
+    requestAnimationFrame(attemptProcess);
+}
+
+function getFeatureProperties(object) {
+    // Traverse UP to find the feature properties attached by iTowns
+    let obj = object;
+    while (obj) {
+        if (obj.userData?.feature?.properties) return obj.userData.feature.properties;
+        if (obj.feature?.properties) return obj.feature.properties;
+        obj = obj.parent;
+    }
+    return {};
+}
+
+function processRoadTileRoot(featureRoot) {
+    if (!featureRoot) return;
+    const targetRoot = featureRoot.meshes || featureRoot;
+    const tileKey = getFeatureTileKey(featureRoot);
+    if (tileKey && RoadTileAnchors.has(tileKey)) {
+        featureRoot.userData = featureRoot.userData || {};
+        featureRoot.userData.hasQueuedFatLine = false;
+        return;
+    }
+    featureRoot.userData = featureRoot.userData || {};
+    featureRoot.userData.isRoadFeature = true;
+
+    // Ensure matrices are updated relative to current hierarchy before we bake vertices.
+    featureRoot.updateWorldMatrix(true, true);
+    targetRoot.updateWorldMatrix(true, true);
+    const frustumState = !RoadGlobalState.disableFrustumCulling;
+    targetRoot.frustumCulled = frustumState;
+    featureRoot.frustumCulled = frustumState;
+
+    const geometryGroups = new Map();
+    const targetInverse = _scratchRootInverse.copy(targetRoot.matrixWorld).invert();
+
+    const traverse = (node) => {
+        if (!node) return;
+        if (node.userData?.isFatLine) return;
+
+        const isLineLike = node.isMesh || node.isLine || node.isLineSegments;
+        if (isLineLike && node.geometry && !node.userData?.hasProcessedFatLine) {
+            const toTargetMatrix = _scratchMatrix.copy(node.matrixWorld).premultiply(targetInverse);
+            addMeshToGeometryGroups(node, geometryGroups, toTargetMatrix);
+        }
+
+        if (node.children) {
+            for (const child of node.children) {
+                traverse(child);
+            }
+        }
+    };
+
+    traverse(targetRoot);
+    createFatLinesFromGroups(featureRoot, targetRoot, geometryGroups);
+    featureRoot.userData.hasQueuedFatLine = false;
+}
+
+Promise.all(roadLayers.map((layer) => view.addLayer(layer))).then(() => {
+    console.log('Roads layer added');
+    createRoadsUI();
+    applyFrustumCullingState();
+    triggerUpdate();
+});
+
+// ----------------------------------------------------------------------------
+// 5. ROBUST SYNC LOOP
+// ----------------------------------------------------------------------------
 
 
-// Instantiate three's VR Button
-const vrButton = VRButton.createButton(view.renderer);
-viewerDiv.appendChild(vrButton);
+view.addFrameRequester(itowns.MAIN_LOOP_EVENTS.BEFORE_RENDER, () => {
+    const frameStart = performance.now();
+    const renderer = view.mainLoop.gfxEngine.renderer;
+    renderer.getSize(_rendererSize);
+    // attempt at retina support
+    renderer.setPixelRatio(window.devicePixelRatio);
 
-window.view = view;
-window.itowns = itowns;
-window.THREE = THREE;
-window.globeRoots = globeRoots;
-window.setActiveGlobe = setActiveGlobe;
-window.frameGlobe = frameGlobe;
-window.frameAllGlobes = frameAllGlobes;
-window.logGlobeTransforms = logGlobeTransforms;
-window.setAxesVisible = setAxesVisible;
-window.setWireframeVisible = setWireframeVisible;
+    if (_rendererSize.x !== _lastRendererWidth || _rendererSize.y !== _lastRendererHeight) {
+        _lastRendererWidth = _rendererSize.x;
+        _lastRendererHeight = _rendererSize.y;
+        RoadGlobalState.resolution.set(_rendererSize.x, _rendererSize.y);
+        syncMaterialResolutions();
+    }
+
+    // Only needed if some shaders still use it:
+    StereoUniforms.uCameraPos.value.copy(view.camera.camera3D.position);
+
+    const sphereCtl = SphereProjectionState.controller;
+    const active = sphereCtl && sphereCtl.hasGround && sphereCtl.hasGround();
+    const useProjection = RoadGlobalState.useProjection && !!active;
+    const useCull = RoadGlobalState.cullBackfaces && !!active;
+
+    if (active) {
+        const C = sphereCtl.mesh.position;
+        const rawR = sphereCtl.mesh.scale.x;
+        const R = Math.max(rawR, 1e-3); // clamp radius here, once
+
+        updateSphereBasisUniform();
+
+        StereoUniforms.uSphereCenter.value.copy(C);
+        StereoUniforms.uSphereR.value = R;
+        StereoUniforms.uTwoR.value = 2 * R;
+        StereoUniforms.uInv2R.value = 1.0 / (2 * R);
+
+        _tmpCamDir.copy(view.camera.camera3D.position).sub(C).normalize();
+        StereoUniforms.uCameraDirFromCenter.value.copy(_tmpCamDir);
+    } else {
+        StereoUniforms.uSphereCenter.value.set(0, 0, 0);
+        StereoUniforms.uSphereR.value = -1.0;
+        StereoUniforms.uTwoR.value = 0.0;
+        StereoUniforms.uInv2R.value = 0.0;
+        StereoUniforms.uCameraDirFromCenter.value.set(0, 0, 1);
+        StereoUniforms.uSphereBasis.value.identity();
+    }
+
+    StereoUniforms.uProjectionStrength.value = useProjection ? 1.0 : 0.0;
+    StereoUniforms.uCullBackfaces.value = useCull ? 1.0 : 0.0;
+
+    for (const entry of RoadTileAnchors.values()) {
+        const source = entry.sourceRoot;
+        const anchor = entry.anchor;
+        if (!source || !anchor) continue;
+        if (source.parent) {
+            if (source.matrixWorldNeedsUpdate || entry.needsSync) {
+                source.updateWorldMatrix(true, false);
+                anchor.matrix.copy(source.matrixWorld);
+                anchor.matrix.decompose(anchor.position, anchor.quaternion, anchor.scale);
+                anchor.updateMatrix();
+                anchor.updateMatrixWorld(true);
+                entry.needsSync = false;
+            }
+        } else {
+            entry.sourceRoot = null;
+            entry.needsSync = false;
+        }
+    }
+
+    for (const obj of RoadFatLines) {
+        if (!obj || !obj.material) continue;
+        if (!obj.parent) {
+            RoadFatLines.delete(obj);
+        }
+    }
+
+});
+
+// ----------------------------------------------------------------------------
+// 6. UI & STATE CONTROL
+// ----------------------------------------------------------------------------
+
+function notifyRoadLayers() {
+    for (const layer of roadLayers) {
+        view.notifyChange(layer);
+    }
+}
+
+function applyFrustumCullingState() {
+    const frustumCulled = !RoadGlobalState.disableFrustumCulling;
+    for (const layer of roadLayers) {
+        layer.object3d.traverse((obj) => {
+            if (!obj) return;
+            if (obj.userData?.isFatLine || obj.userData?.isRoadFeature || obj.isLine || obj.isLineSegments || obj.isMesh || obj.isGroup) {
+                obj.frustumCulled = frustumCulled;
+            }
+        });
+    }
+    RoadFatLineRoot.frustumCulled = false;
+    RoadFatLineRoot.traverse((obj) => {
+        if (!obj) return;
+        if (obj.userData?.isFatLine || obj.userData?.isRoadFeature || obj.userData?.isRoadAnchor || obj.isLine || obj.isLineSegments || obj.isMesh || obj.isGroup) {
+            obj.frustumCulled = frustumCulled;
+        }
+    });
+    notifyRoadLayers();
+}
+
+function triggerUpdate() {
+    applyGlobalStateToMaterials();
+}
+
+function createRoadsUI() {
+    ensureUIPanelStyles();
+    const panel = document.createElement('div');
+    applyPanelStyle(panel, { right: '10px', top: '10px' });
+    panel.classList.add('itowns-ui-panel');
+
+    const checkboxStyle = '';
+    panel.innerHTML = `
+        <div style="font-weight:bold; font-size:14px; border-bottom:1px solid #4b5066; padding-bottom:5px;">
+            Road Settings
+        </div>
+        
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-visible" ${RoadGlobalState.visible ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Visibility</span>
+        </label>
+
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-ontop" ${RoadGlobalState.depthTest ? '' : 'checked'} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Always On Top (Ghost)</span>
+        </label>
+
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-projection" ${RoadGlobalState.useProjection ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Stereographic Projection</span>
+        </label>
+
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-cull" ${RoadGlobalState.cullBackfaces ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Cull Backfaces (Sphere)</span>
+        </label>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-nocull" ${RoadGlobalState.disableFrustumCulling ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Disable Frustum Culling</span>
+        </label>
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-widths" ${RoadGlobalState.useIndividualWidths ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">Per-Road Widths</span>
+        </label>
+
+
+        <div style="display:flex; flex-direction:column; gap:4px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Width Multiplier</span>
+                <span id="ui-width-val">${RoadGlobalState.widthMultiplier.toFixed(1)}x</span>
+            </div>
+            <input type="range" id="ui-width" min="0.1" max="5" step="0.1" value="${RoadGlobalState.widthMultiplier}">
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:4px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span>Elevation Offset</span>
+                <span id="ui-alt-val">${RoadGlobalState.altitudeOffset.toFixed(1)} m</span>
+            </div>
+            <input type="range" id="ui-alt" min="-50" max="50" step="0.5" value="${RoadGlobalState.altitudeOffset}">
+        </div>
+
+        <label style="${TOGGLE_LABEL_STYLE}">
+            <input type="checkbox" id="ui-worldunits" ${RoadGlobalState.useWorldUnits ? 'checked' : ''} style="${checkboxStyle}">
+            <span style="${TOGGLE_TEXT_STYLE}">World Units (Meters)</span>
+        </label>
+        
+        <!--
+        <button id="ui-debug" style="${UI_BUTTON_STYLE}width:100%;text-align:center;margin-top:6px;">Debug Console</button>
+        -->
+    `;
+    document.body.appendChild(panel);
+
+    const visibleInput = document.getElementById('ui-visible');
+    const ghostInput = document.getElementById('ui-ontop');
+    const projectionInput = document.getElementById('ui-projection');
+    const cullInput = document.getElementById('ui-cull');
+    const noCullInput = document.getElementById('ui-nocull');
+    const widthsInput = document.getElementById('ui-widths');
+    const widthSlider = document.getElementById('ui-width');
+    const widthLabel = document.getElementById('ui-width-val');
+    const altSlider = document.getElementById('ui-alt');
+    const altLabel = document.getElementById('ui-alt-val');
+    const worldUnitsInput = document.getElementById('ui-worldunits');
+
+    visibleInput.checked = RoadGlobalState.visible;
+    ghostInput.checked = !RoadGlobalState.depthTest;
+    projectionInput.checked = RoadGlobalState.useProjection;
+    cullInput.checked = RoadGlobalState.cullBackfaces;
+    noCullInput.checked = RoadGlobalState.disableFrustumCulling;
+    widthsInput.checked = RoadGlobalState.useIndividualWidths;
+    widthSlider.value = RoadGlobalState.widthMultiplier;
+    widthLabel.innerText = RoadGlobalState.widthMultiplier.toFixed(1) + 'x';
+    altSlider.value = RoadGlobalState.altitudeOffset;
+    altLabel.innerText = RoadGlobalState.altitudeOffset.toFixed(1) + ' m';
+    worldUnitsInput.checked = RoadGlobalState.useWorldUnits;
+
+    for (const layer of roadLayers) {
+        layer.object3d.visible = RoadGlobalState.visible;
+    }
+
+    // Events
+    visibleInput.addEventListener('change', (e) => {
+        RoadGlobalState.visible = e.target.checked;
+        for (const layer of roadLayers) {
+            layer.object3d.visible = RoadGlobalState.visible;
+        }
+        RoadUIStorage.save({ visible: RoadGlobalState.visible });
+        notifyRoadLayers();
+    });
+
+    ghostInput.addEventListener('change', (e) => {
+        RoadGlobalState.depthTest = !e.target.checked;
+        RoadUIStorage.save({ depthTest: RoadGlobalState.depthTest });
+        triggerUpdate();
+    });
+
+    projectionInput.addEventListener('change', (e) => {
+        RoadGlobalState.useProjection = e.target.checked;
+        RoadUIStorage.save({ useProjection: RoadGlobalState.useProjection });
+        triggerUpdate();
+    });
+
+    cullInput.addEventListener('change', (e) => {
+        RoadGlobalState.cullBackfaces = e.target.checked;
+        RoadUIStorage.save({ cullBackfaces: RoadGlobalState.cullBackfaces });
+        notifyRoadLayers();
+    });
+
+    noCullInput.addEventListener('change', (e) => {
+        RoadGlobalState.disableFrustumCulling = e.target.checked;
+        RoadUIStorage.save({ disableFrustumCulling: RoadGlobalState.disableFrustumCulling });
+        applyFrustumCullingState();
+    });
+
+    widthsInput.addEventListener('change', (e) => {
+        RoadGlobalState.useIndividualWidths = e.target.checked;
+        RoadUIStorage.save({ useIndividualWidths: RoadGlobalState.useIndividualWidths });
+        rebuildAllRoadTiles();
+        applyGlobalStateToMaterials();
+    });
+
+    widthSlider.addEventListener('input', (e) => {
+        const v = parseFloat(e.target.value);
+        widthLabel.innerText = v.toFixed(1) + 'x';
+        RoadGlobalState.widthMultiplier = v;
+        RoadUIStorage.save({ widthMultiplier: RoadGlobalState.widthMultiplier });
+        triggerUpdate();
+    });
+
+    altSlider.addEventListener('input', (e) => {
+        const v = parseFloat(e.target.value);
+        altLabel.innerText = v.toFixed(1) + ' m';
+        RoadGlobalState.altitudeOffset = v;
+        RoadUIStorage.save({ altitudeOffset: RoadGlobalState.altitudeOffset });
+        rebuildAllRoadTiles();
+    });
+
+    worldUnitsInput.addEventListener('change', (e) => {
+        RoadGlobalState.useWorldUnits = e.target.checked;
+        RoadUIStorage.save({ useWorldUnits: RoadGlobalState.useWorldUnits });
+        triggerUpdate();
+    });
+
+    // document.getElementById('ui-debug').addEventListener('click', () => {
+    //     let count = 0;
+    //     for (const layer of roadLayers) {
+    //         layer.object3d.traverse(o => { if (o.userData?.isFatLine) count++; });
+    //     }
+    //     RoadFatLineRoot.traverse(o => { if (o.userData?.isFatLine) count++; });
+    //     console.log(`Visible Fat Lines: ${count}`);
+    // });
+}
+function updateSphereBasisUniform() {
+    const sphereCtl = SphereProjectionState.controller;
+    const basis = StereoUniforms.uSphereBasis.value;
+    if (!sphereCtl || !sphereCtl.hasGround()) {
+        basis.identity();
+        return;
+    }
+    _basisUp.copy(sphereCtl.mesh.position).normalize();
+    if (Math.abs(_basisUp.y) < 0.99) {
+        _basisRef.set(0, 1, 0);
+    } else {
+        _basisRef.set(1, 0, 0);
+    }
+    _basisX.crossVectors(_basisRef, _basisUp).normalize();
+    _basisZ.crossVectors(_basisUp, _basisX).normalize();
+    basis.set(
+        _basisX.x, _basisUp.x, _basisZ.x,
+        _basisX.y, _basisUp.y, _basisZ.y,
+        _basisX.z, _basisUp.z, _basisZ.z
+    );
+}
