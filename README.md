@@ -26,6 +26,7 @@ npm run dev
 
 Vite is configured for HTTPS using local cert files (`localhost.pem` / `localhost-key.pem`).  
 If your browser warns about the certificate, trust/accept it for local development.
+Local dev base path is `/`, so URLs are `https://localhost:<port>/` without a repository-name subpath.
 
 ### Build
 ```bash
@@ -55,8 +56,15 @@ Repository setting required once:
 ## Project Map
 
 - [index.html](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/index.html): current default entry page.
-- [main.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/main.js): current default runtime script (multi-globe camera/interaction work).
-- [main-latest.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/main-latest.js): most complete roads + custom projection + width controls pipeline.
+- [main.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/main.js): runtime orchestrator (thin entrypoint).
+- [setupView.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/view/setupView.js): globe view + base layers bootstrap.
+- [state.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/state.js): roads config/registry + persisted render state.
+- [index.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/projection/index.js): projection controller, uniforms, shader patch logic.
+- [renderer.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/renderer.js): roads orchestration (layer + pipeline + UI + frame sync wiring).
+- [fatLinePipeline.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/fatLinePipeline.js): tile processing, geometry grouping, fat-line creation, materials/state application.
+- [layer.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/layer.js): WFS roads source + DEM altitude draping.
+- [frameSync.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/frameSync.js): per-frame uniforms and anchor sync.
+- [ui.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/ui.js): roads settings UI and events.
 - [VECTOR_LINES_DOSSIER.md](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/VECTOR_LINES_DOSSIER.md): reproducible implementation guide for vector rendering and thickness modes.
 
 ## Data Sources Used
@@ -67,7 +75,7 @@ Repository setting required once:
 
 ## Line Thickness Modes (Summary)
 
-In the roads pipeline (`main-latest.js`):
+In the roads pipeline (`src/roads/fatLinePipeline.js` + `src/roads/state.js`):
 - Per-road variable width: `RoadGlobalState.useIndividualWidths = true` and `batchId`-based width lookup from road properties (`nature`).
 - Uniform width: `RoadGlobalState.useIndividualWidths = false`.
 - Global scaling: `RoadGlobalState.widthMultiplier`.
@@ -79,5 +87,5 @@ See the full walkthrough in [VECTOR_LINES_DOSSIER.md](/Users/MadMax/Developer/We
 ## Known Issues / TO DO
 
 - Multiple `main-*.js` variants duplicate large sections of logic; shared modules would reduce maintenance risk.
-- `index.html` currently points to `main.js` while the advanced roads/shader implementation lives in `main-latest.js`.
+- `src/roads/fatLinePipeline.js` is still large and could be split further (`geometry`, `materials`, `tile lifecycle`) if iteration continues.
 - `package.json` declares `"type": "commonjs"` although project source is ESM-style (`import` syntax).
