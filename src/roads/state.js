@@ -59,11 +59,13 @@ export function getWidthForBatch(batchId) {
 export const RoadGlobalState = {
     visible: true,
     widthMultiplier: 2.0,
+    pathsWidthMultiplier: 1.0,
     useWorldUnits: false,
     depthTest: true,
     altitudeOffset: 5.0,
     resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
     useProjection: true,
+    pathsUseProjection: true,
     cullBackfaces: false,
     disableFrustumCulling: false,
     useIndividualWidths: true,
@@ -107,10 +109,12 @@ export function applyPersistedRoadGlobalState() {
     if (!saved) return;
     if ('visible' in saved) RoadGlobalState.visible = !!saved.visible;
     if ('widthMultiplier' in saved && Number.isFinite(saved.widthMultiplier)) RoadGlobalState.widthMultiplier = saved.widthMultiplier;
+    if ('pathsWidthMultiplier' in saved && Number.isFinite(saved.pathsWidthMultiplier)) RoadGlobalState.pathsWidthMultiplier = saved.pathsWidthMultiplier;
     if ('useWorldUnits' in saved) RoadGlobalState.useWorldUnits = !!saved.useWorldUnits;
     if ('depthTest' in saved) RoadGlobalState.depthTest = !!saved.depthTest;
     if ('altitudeOffset' in saved && Number.isFinite(saved.altitudeOffset)) RoadGlobalState.altitudeOffset = saved.altitudeOffset;
     if ('useProjection' in saved) RoadGlobalState.useProjection = !!saved.useProjection;
+    if ('pathsUseProjection' in saved) RoadGlobalState.pathsUseProjection = !!saved.pathsUseProjection;
     if ('cullBackfaces' in saved) RoadGlobalState.cullBackfaces = !!saved.cullBackfaces;
     if ('disableFrustumCulling' in saved) RoadGlobalState.disableFrustumCulling = !!saved.disableFrustumCulling;
     if ('useIndividualWidths' in saved) RoadGlobalState.useIndividualWidths = !!saved.useIndividualWidths;

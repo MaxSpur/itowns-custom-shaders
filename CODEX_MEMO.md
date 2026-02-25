@@ -1,10 +1,10 @@
 # CODEX_MEMO
 
 ## CURRENT_TASK
-Address follow-up cleanup/performance items found during modularization.
+Add GPX drag-drop import and persistent path controls integrated into the existing road fat-line pipeline/UI.
 
 ## CURRENT_SUBTASK
-Refresh standalone vector dossier to document the new optimized fat-line architecture and reuse patterns.
+GPX drag-drop import + persistent path list + integrated path controls completed and validated.
 
 ## SESSION INSIGHTS
 - `main.js` is now a thin orchestrator that wires modules.
@@ -63,6 +63,17 @@ Refresh standalone vector dossier to document the new optimized fat-line archite
 - Road geometry grouping now carries color in vertex attributes by default (with fallback color injection when source color attributes are absent), allowing many distinct line colors without one material per color.
 - Material cache key now ignores `colorHex` when `vertexColors` are enabled, so material count scales primarily with render state/width rather than unique colors.
 - `VECTOR_LINES_DOSSIER.md` has been rewritten to reflect the updated architecture: vertex-color-first grouping, width-based batching, render-state-keyed material cache, bounded queue retries, and explicit geometry disposal in cleanup paths.
+- Added [gpxPaths.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/gpxPaths.js): drag-drop `.gpx` import, XML parsing (`trkseg`/`rte`/`wpt` fallback), localStorage persistence via `RoadUIStorage`, per-path color assignment, per-path visibility/delete, and fat-line rendering with shared materials.
+- GPX rendering is integrated with road controls:
+  - width formula: `defaultRoadWidth * roadWidthMultiplier * pathsWidthMultiplier`,
+  - `depthTest`, `useWorldUnits`, `altitudeOffset`, `disableFrustumCulling`, and `cullBackfaces` now affect paths,
+  - projection application to paths is gated by new `pathsUseProjection` + existing `useProjection`.
+- `Road Settings` panel now has a `GPX Paths` section:
+  - `Paths Width Multiplier` slider,
+  - `Apply Projection To Paths` toggle,
+  - scrollable persistent list with per-path visibility toggle and delete button,
+  - drag-and-drop import hint.
+- `RoadGlobalState` now persists and restores `pathsWidthMultiplier` and `pathsUseProjection`.
 
 ## Problems / TO DO
 - Consolidate duplicated road/shader code across many `main-*.js` files into shared modules (source setup, fat-line conversion, shader patching, UI state).

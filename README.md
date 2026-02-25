@@ -6,7 +6,8 @@ It includes:
 - multi-globe interaction prototypes,
 - stereographic and cone projection experiments,
 - vector road rendering with `LineSegments2` fat lines,
-- per-road width mapping and runtime thickness controls.
+- per-road width mapping and runtime thickness controls,
+- drag-and-drop GPX path import with persistent path list controls.
 
 ## Quick Start
 
@@ -68,6 +69,7 @@ Repository setting required once:
 - [layer.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/layer.js): WFS roads source + DEM altitude draping.
 - [frameSync.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/frameSync.js): per-frame uniforms and anchor sync.
 - [ui.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/ui.js): roads settings UI and events.
+- [gpxPaths.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/gpxPaths.js): GPX drag-drop import, persistence, per-path controls, and fat-line rendering.
 - [VECTOR_LINES_DOSSIER.md](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/VECTOR_LINES_DOSSIER.md): reproducible implementation guide for vector rendering and thickness modes.
 
 ## Data Sources Used
@@ -82,6 +84,7 @@ In the roads pipeline (`src/roads/fatLinePipeline.js` + `src/roads/state.js`):
 - Per-road variable width: `RoadGlobalState.useIndividualWidths = true` and `batchId`-based width lookup from road properties (`nature`).
 - Uniform width: `RoadGlobalState.useIndividualWidths = false`.
 - Global scaling: `RoadGlobalState.widthMultiplier`.
+- GPX path scaling: `defaultRoadWidth * RoadGlobalState.widthMultiplier * RoadGlobalState.pathsWidthMultiplier`.
 - Screen-space fixed thickness: `LineMaterial.worldUnits = false`.
 - World-space/perspective thickness: `LineMaterial.worldUnits = true`.
 

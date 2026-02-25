@@ -7,6 +7,53 @@ import {
     UI_BUTTON_STYLE,
 } from '../ui/panelStyles.js';
 
+function createPathListRow(path, gpxPathsManager) {
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.alignItems = 'center';
+    row.style.gap = '8px';
+    row.style.padding = '4px 0';
+    row.style.borderBottom = '1px solid rgba(90, 98, 123, 0.35)';
+
+    const swatch = document.createElement('span');
+    swatch.style.width = '10px';
+    swatch.style.height = '10px';
+    swatch.style.borderRadius = '999px';
+    swatch.style.border = '1px solid rgba(255,255,255,0.45)';
+    swatch.style.background = path.color || '#ffffff';
+
+    const name = document.createElement('span');
+    name.textContent = path.name || path.id;
+    name.style.flex = '1';
+    name.style.minWidth = '0';
+    name.style.overflow = 'hidden';
+    name.style.textOverflow = 'ellipsis';
+    name.style.whiteSpace = 'nowrap';
+    name.style.fontSize = '12px';
+
+    const visibleToggle = document.createElement('input');
+    visibleToggle.type = 'checkbox';
+    visibleToggle.checked = path.visible !== false;
+    visibleToggle.title = 'Toggle visibility';
+    visibleToggle.addEventListener('change', (event) => {
+        gpxPathsManager.setPathVisible(path.id, event.target.checked);
+    });
+
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.textContent = 'Delete';
+    removeButton.style.cssText = `${UI_BUTTON_STYLE}width:auto;padding:2px 8px;font-size:11px;line-height:1.3;`;
+    removeButton.addEventListener('click', () => {
+        gpxPathsManager.deletePath(path.id);
+    });
+
+    row.appendChild(swatch);
+    row.appendChild(name);
+    row.appendChild(visibleToggle);
+    row.appendChild(removeButton);
+    return row;
+}
+
 export function createRoadsUI({
     roadLayers,
     notifyRoadLayers,
@@ -14,6 +61,7 @@ export function createRoadsUI({
     applyFrustumCullingState,
     rebuildAllRoadTiles,
     applyGlobalStateToMaterials,
+    gpxPathsManager,
 }) {
     ensureUIPanelStyles();
     const panel = document.createElement('div');
@@ -75,6 +123,25 @@ export function createRoadsUI({
             <input type="checkbox" id="ui-worldunits" ${RoadGlobalState.useWorldUnits ? 'checked' : ''} style="${checkboxStyle}">
             <span style="${TOGGLE_TEXT_STYLE}">World Units (Meters)</span>
         </label>
+
+        <div style="margin-top:8px; padding-top:8px; border-top:1px solid #4b5066; display:flex; flex-direction:column; gap:6px;">
+            <div style="font-weight:bold; font-size:13px;">GPX Paths</div>
+            <div style="display:flex; flex-direction:column; gap:4px;">
+                <div style="display:flex; justify-content:space-between;">
+                    <span>Paths Width Multiplier</span>
+                    <span id="ui-path-width-val">${RoadGlobalState.pathsWidthMultiplier.toFixed(1)}x</span>
+                </div>
+                <input type="range" id="ui-path-width" min="0.1" max="5" step="0.1" value="${RoadGlobalState.pathsWidthMultiplier}">
+            </div>
+            <label style="${TOGGLE_LABEL_STYLE}">
+                <input type="checkbox" id="ui-path-projection" ${RoadGlobalState.pathsUseProjection ? 'checked' : ''} style="${checkboxStyle}">
+                <span style="${TOGGLE_TEXT_STYLE}">Apply Projection To Paths</span>
+            </label>
+            <div style="font-size:11px; color:#b9bfd6; opacity:0.9;">
+                Drag & drop .gpx files onto the page to import paths.
+            </div>
+            <div id="ui-paths-list" style="max-height:170px; overflow-y:auto; border:1px solid rgba(95, 104, 130, 0.5); border-radius:6px; padding:6px;"></div>
+        </div>
         
         <!--
         <button id="ui-debug" style="${UI_BUTTON_STYLE}width:100%;text-align:center;margin-top:6px;">Debug Console</button>
@@ -93,6 +160,37 @@ export function createRoadsUI({
     const altSlider = document.getElementById('ui-alt');
     const altLabel = document.getElementById('ui-alt-val');
     const worldUnitsInput = document.getElementById('ui-worldunits');
+    const pathWidthSlider = document.getElementById('ui-path-width');
+    const pathWidthLabel = document.getElementById('ui-path-width-val');
+    const pathProjectionInput = document.getElementById('ui-path-projection');
+    const pathsList = document.getElementById('ui-paths-list');
+
+    const renderPathsList = (paths = []) => {
+        if (!pathsList) return;
+        pathsList.innerHTML = '';
+
+        if (!gpxPathsManager) {
+            const empty = document.createElement('div');
+            empty.textContent = 'GPX path manager unavailable.';
+            empty.style.fontSize = '12px';
+            empty.style.opacity = '0.8';
+            pathsList.appendChild(empty);
+            return;
+        }
+
+        if (!paths.length) {
+            const empty = document.createElement('div');
+            empty.textContent = 'No imported paths yet.';
+            empty.style.fontSize = '12px';
+            empty.style.opacity = '0.8';
+            pathsList.appendChild(empty);
+            return;
+        }
+
+        for (const path of paths) {
+            pathsList.appendChild(createPathListRow(path, gpxPathsManager));
+        }
+    };
 
     visibleInput.checked = RoadGlobalState.visible;
     ghostInput.checked = !RoadGlobalState.depthTest;
@@ -105,9 +203,20 @@ export function createRoadsUI({
     altSlider.value = RoadGlobalState.altitudeOffset;
     altLabel.innerText = RoadGlobalState.altitudeOffset.toFixed(1) + ' m';
     worldUnitsInput.checked = RoadGlobalState.useWorldUnits;
+    pathWidthSlider.value = RoadGlobalState.pathsWidthMultiplier;
+    pathWidthLabel.innerText = RoadGlobalState.pathsWidthMultiplier.toFixed(1) + 'x';
+    pathProjectionInput.checked = RoadGlobalState.pathsUseProjection;
 
     for (const layer of roadLayers) {
         layer.object3d.visible = RoadGlobalState.visible;
+    }
+
+    if (gpxPathsManager?.subscribe) {
+        gpxPathsManager.subscribe((paths) => {
+            renderPathsList(paths);
+        });
+    } else {
+        renderPathsList([]);
     }
 
     visibleInput.addEventListener('change', (e) => {
@@ -134,7 +243,7 @@ export function createRoadsUI({
     cullInput.addEventListener('change', (e) => {
         RoadGlobalState.cullBackfaces = e.target.checked;
         RoadUIStorage.save({ cullBackfaces: RoadGlobalState.cullBackfaces });
-        notifyRoadLayers();
+        triggerUpdate();
     });
 
     noCullInput.addEventListener('change', (e) => {
@@ -148,6 +257,7 @@ export function createRoadsUI({
         RoadUIStorage.save({ useIndividualWidths: RoadGlobalState.useIndividualWidths });
         rebuildAllRoadTiles();
         applyGlobalStateToMaterials();
+        triggerUpdate();
     });
 
     widthSlider.addEventListener('input', (e) => {
@@ -169,6 +279,20 @@ export function createRoadsUI({
     worldUnitsInput.addEventListener('change', (e) => {
         RoadGlobalState.useWorldUnits = e.target.checked;
         RoadUIStorage.save({ useWorldUnits: RoadGlobalState.useWorldUnits });
+        triggerUpdate();
+    });
+
+    pathWidthSlider.addEventListener('input', (e) => {
+        const v = parseFloat(e.target.value);
+        pathWidthLabel.innerText = `${v.toFixed(1)}x`;
+        RoadGlobalState.pathsWidthMultiplier = v;
+        RoadUIStorage.save({ pathsWidthMultiplier: RoadGlobalState.pathsWidthMultiplier });
+        triggerUpdate();
+    });
+
+    pathProjectionInput.addEventListener('change', (e) => {
+        RoadGlobalState.pathsUseProjection = e.target.checked;
+        RoadUIStorage.save({ pathsUseProjection: RoadGlobalState.pathsUseProjection });
         triggerUpdate();
     });
 }
