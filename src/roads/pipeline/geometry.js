@@ -42,71 +42,19 @@ export function createRoadGeometryProcessor({
     const scratchVecB = new THREE.Vector3();
     const scratchMatrix = new THREE.Matrix4();
     const scratchRootInverse = new THREE.Matrix4();
+    const scratchColor = new THREE.Color();
 
-    function appendGeometryToGroup(sourceGeom, group, transformMatrix) {
-        if (!sourceGeom) return;
-        const posAttr = sourceGeom.attributes?.position;
-        if (!posAttr) return;
-
-        const colAttr = sourceGeom.attributes?.color;
-        const indexAttr = sourceGeom.index;
-
-        if (!colAttr && group.hasColors) {
-            group.hasColors = false;
-            group.colors.length = 0;
-        }
-
-        const useColors = group.hasColors && !!colAttr;
-        const useTransform = !!transformMatrix;
-
-        const pushSegment = (aIdx, bIdx) => {
-            const ax = posAttr.getX(aIdx);
-            const ay = posAttr.getY(aIdx);
-            const az = posAttr.getZ(aIdx);
-            const bx = posAttr.getX(bIdx);
-            const by = posAttr.getY(bIdx);
-            const bz = posAttr.getZ(bIdx);
-
-            if (!isFinite3(ax, ay, az) || !isFinite3(bx, by, bz)) return;
-            if (isNearOrigin(ax, ay, az) && isNearOrigin(bx, by, bz)) return;
-
-            if (useTransform) {
-                scratchVecA.set(ax, ay, az).applyMatrix4(transformMatrix);
-                scratchVecB.set(bx, by, bz).applyMatrix4(transformMatrix);
-                group.positions.push(
-                    scratchVecA.x, scratchVecA.y, scratchVecA.z,
-                    scratchVecB.x, scratchVecB.y, scratchVecB.z,
-                );
-            } else {
-                group.positions.push(ax, ay, az, bx, by, bz);
-            }
-
-            if (useColors) {
-                group.colors.push(
-                    colAttr.getX(aIdx), colAttr.getY(aIdx), colAttr.getZ(aIdx),
-                    colAttr.getX(bIdx), colAttr.getY(bIdx), colAttr.getZ(bIdx),
-                );
-            }
-        };
-
-        if (indexAttr) {
-            for (let i = 0; i < indexAttr.count; i += 2) {
-                pushSegment(indexAttr.getX(i), indexAttr.getX(i + 1));
-            }
-            return;
-        }
-
-        for (let i = 0; i < posAttr.count; i += 2) {
-            pushSegment(i, i + 1);
-        }
-    }
-
-    function createFatLineGeometriesByBatch(sourceGeom, transformMatrix) {
+    function createFatLineGeometriesByBatch(sourceGeom, transformMatrix, fallbackColorHex) {
         const posAttr = sourceGeom?.attributes?.position;
         const colAttr = sourceGeom?.attributes?.color;
         const batchAttr = sourceGeom?.attributes?.batchId;
         const indexAttr = sourceGeom?.index;
         if (!posAttr) return [];
+
+        scratchColor.set(fallbackColorHex || '#FFFFFF');
+        const fallbackR = scratchColor.r;
+        const fallbackG = scratchColor.g;
+        const fallbackB = scratchColor.b;
 
         const hasColorsAttr = !!colAttr;
         const hasBatchAttr = !!batchAttr;
@@ -150,6 +98,11 @@ export function createRoadGeometryProcessor({
                     colAttr.getX(aIdx), colAttr.getY(aIdx), colAttr.getZ(aIdx),
                     colAttr.getX(bIdx), colAttr.getY(bIdx), colAttr.getZ(bIdx),
                 );
+            } else {
+                group.colors.push(
+                    fallbackR, fallbackG, fallbackB,
+                    fallbackR, fallbackG, fallbackB,
+                );
             }
         }
 
@@ -166,7 +119,7 @@ export function createRoadGeometryProcessor({
         const results = [];
         for (const [batchId, data] of groups.entries()) {
             if (!data.positions.length) continue;
-            const hasValidColors = hasColorsAttr && data.colors.length === data.positions.length;
+            const hasValidColors = data.colors.length === data.positions.length;
             results.push({
                 positions: data.positions.slice(),
                 colors: hasValidColors ? data.colors.slice() : null,
@@ -183,45 +136,61 @@ export function createRoadGeometryProcessor({
         const props = getFeatureProperties(mesh);
         const natureName = props?.nature || 'unknown';
         const baseWidthNature = ROAD_WIDTH_BASE[natureName] || 2;
-        const color = ROAD_COLOR[natureName] || '#FF00FF';
-        const hasColorAttr = !!mesh.geometry.attributes?.color;
+        const fallbackColor = ROAD_COLOR[natureName] || '#FF00FF';
+
+        const geometries = createFatLineGeometriesByBatch(
+            mesh.geometry,
+            transformMatrix,
+            fallbackColor,
+        );
+
+        if (!geometries.length) return;
 
         if (!RoadGlobalState.useIndividualWidths) {
             const baseWidth = 2;
-            const key = `uniform|${color}|${hasColorAttr ? 1 : 0}`;
+            const key = `uniform|${baseWidth}`;
             if (!groups.has(key)) {
                 groups.set(key, {
-                    color,
+                    color: '#FFFFFF',
                     positions: [],
                     colors: [],
-                    hasColors: hasColorAttr,
+                    hasColors: true,
                     baseWidth,
                 });
             }
-            appendGeometryToGroup(mesh.geometry, groups.get(key), transformMatrix);
+
+            const group = groups.get(key);
+            for (const geometry of geometries) {
+                group.positions.push(...geometry.positions);
+                if (group.hasColors && geometry.colors && geometry.colors.length === geometry.positions.length) {
+                    group.colors.push(...geometry.colors);
+                } else {
+                    group.hasColors = false;
+                    group.colors.length = 0;
+                }
+            }
         } else {
-            const geometries = createFatLineGeometriesByBatch(mesh.geometry, transformMatrix);
-            for (const { positions, colors, hasColors, batchId } of geometries) {
-                const widthFromBatch = (batchId !== null && batchId !== undefined)
-                    ? getWidthForBatch(batchId)
+            for (const geometry of geometries) {
+                const widthFromBatch = (geometry.batchId !== null && geometry.batchId !== undefined)
+                    ? getWidthForBatch(geometry.batchId)
                     : undefined;
                 const baseWidth = widthFromBatch || baseWidthNature;
-                const key = `${baseWidth}|${color}|${hasColors ? 1 : 0}`;
+                const key = `width|${baseWidth}`;
 
                 if (!groups.has(key)) {
                     groups.set(key, {
-                        color,
+                        color: '#FFFFFF',
                         positions: [],
                         colors: [],
-                        hasColors,
+                        hasColors: true,
                         baseWidth,
                     });
                 }
 
                 const group = groups.get(key);
-                group.positions.push(...positions);
-                if (hasColors && colors) {
-                    group.colors.push(...colors);
+                group.positions.push(...geometry.positions);
+                if (group.hasColors && geometry.colors && geometry.colors.length === geometry.positions.length) {
+                    group.colors.push(...geometry.colors);
                 } else {
                     group.hasColors = false;
                     group.colors.length = 0;

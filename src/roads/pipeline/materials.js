@@ -9,7 +9,8 @@ export function createRoadMaterialManager({
     const roadMaterialCache = new Map();
 
     function getRoadMaterial(baseWidth, hasColors, colorHex, isDefaultMode) {
-        const key = `${baseWidth}|${hasColors ? 1 : 0}|${colorHex}|${isDefaultMode ? 1 : 0}`;
+        const colorKey = hasColors ? 'vertex' : colorHex;
+        const key = `${baseWidth}|${hasColors ? 1 : 0}|${isDefaultMode ? 1 : 0}|${colorKey}`;
         let material = roadMaterialCache.get(key);
         if (material) return material;
 
