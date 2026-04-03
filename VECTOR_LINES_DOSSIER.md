@@ -6,6 +6,7 @@ Use this guide to build a reusable vector-line pipeline for iTowns that supports
 - high-quality thick lines (`LineSegments2`),
 - variable/fixed/perspective thickness,
 - many distinct colors (including per-path GPX colors),
+- GPX-first workflows (drag-drop import + persisted path controls),
 - optional custom shader deformation,
 - stable long-session behavior (bounded processing retries + cleanup disposal).
 
@@ -43,13 +44,24 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 const LineState = {
   visible: true,
   widthMultiplier: 1.0,
+  pathsWidthMultiplier: 1.0,       // GPX-only extra multiplier
   useIndividualWidths: true, // true: per-feature/per-class widths
   useWorldUnits: false,      // false: screen-like width, true: meters/perspective
+  worldUnitsUseSourceDistance: true, // projected lines keep original-distance thickness
   depthTest: true,           // false: ghost/always-on-top style
+  useProjection: true,
+  pathsUseProjection: true,  // GPX can be toggled independently from roads
   altitudeOffset: 0.0,
   disableFrustumCulling: false,
   resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
 };
+```
+
+Recommended width formulas:
+
+```js
+const roadWidth = baseRoadWidth * LineState.widthMultiplier;
+const gpxWidth = gpxBaseWidth * LineState.widthMultiplier * LineState.pathsWidthMultiplier;
 ```
 
 Example width defaults:
@@ -93,6 +105,28 @@ const source = new itowns.WFSSource({
   zoom: { min: 12, max: 16 },
 });
 ```
+
+Alternative source: vector tiles (MVT)
+
+```js
+const vtSource = new itowns.VectorTilesSource({
+  style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json',
+  filter: (layer) => !layer['source-layer'].includes('oro_'),
+});
+
+const vtFeatureLayer = new itowns.FeatureGeometryLayer('RoadsFromMVT', {
+  source: vtSource,
+  mergeFeatures: true,
+  accurate: false, // always false with VectorTilesSource
+  filter: ({ properties = {} }) => !!(properties.highway || properties.class),
+  batchId: (props) => registerFeature(props),
+});
+```
+
+Notes:
+- `VectorTilesSource` can also be used directly in a `ColorLayer` for map styling/labels.
+- For fat-line reconstruction, keep the `FeatureGeometryLayer` path and run the same geometry/material pipeline shown in this guide.
+- If your GPX source is local files, parse GPX to segments in app code and feed those segments into the same `LineSegmentsGeometry` builder used for roads.
 
 ### Stable `batchId` registry (needed for robust per-feature widths)
 
@@ -562,6 +596,20 @@ vec4 end = viewMatrix * vec4(pEnd, 1.0);
 }
 ```
 
+### Projection + `worldUnits` thickness anchoring (important)
+
+If lines are projected to sphere/cone and `worldUnits = true`, apparent width can become too thick because thickness is computed after projection.
+
+Use a toggle such as `worldUnitsUseSourceDistance` and scale line width in shader using source vs projected depth:
+
+```glsl
+float depthOrig = max(abs(startOriginal.z), 1e-4);
+float depthProj = max(abs(startProjected.z), 1e-4);
+float widthScale = clamp(depthProj / depthOrig, 0.02, 50.0);
+```
+
+Then use `linewidth * widthScale` for world-unit expansion. This keeps projected geometry while preserving original map-distance thickness behavior.
+
 ## 11) GPX-Specific Notes (Per-Path Colors)
 
 If each path needs a unique color:
@@ -572,13 +620,34 @@ If each path needs a unique color:
 
 This preserves flexibility with much lower material churn.
 
+Recommended GPX data model:
+
+```js
+{
+  id: 'gpx-...',
+  name: 'Morning Ride',
+  color: '#43a5ff',
+  visible: true,
+  segments: [ [ { lat, lon, ele? }, ... ], ... ],
+}
+```
+
+Recommended parsing fallback order:
+1. `trkseg/trkpt`
+2. `rte/rtept`
+3. `wpt` chain (if there are at least 2 points)
+
+Persist only compact path metadata + coordinates; rebuild `LineSegmentsGeometry` from persisted segments on startup.
+
 ## 12) Width/Thickness Modes Summary
 
 - Variable width by class/path: `useIndividualWidths = true`
 - Fixed uniform width: `useIndividualWidths = false`
 - Global width scaling: `widthMultiplier`
+- GPX extra scaling: `pathsWidthMultiplier`
 - Screen-like thickness: `useWorldUnits = false`
 - Perspective/metric thickness: `useWorldUnits = true`
+- Projected geometry with source-distance thickness: `useWorldUnits = true` + `worldUnitsUseSourceDistance = true`
 
 ## 13) Common Failure Modes
 
@@ -592,6 +661,8 @@ This preserves flexibility with much lower material churn.
   line geometries removed but not disposed.
 - Infinite processing loop:
   retry queue has no time/attempt limit for unattached roots.
+- Projected lines look too thick and clumped:
+  world-units thickness is computed from projected positions; add source-distance width scaling toggle.
 
 ## 14) Performance Checklist
 
@@ -601,3 +672,4 @@ This preserves flexibility with much lower material churn.
 4. Dispose line geometries on cleanup.
 5. Avoid per-frame renderer state calls unless values changed.
 6. Keep frustum strategy explicit; disabling globally can be expensive.
+7. For GPX-heavy use, persist path segments and rebuild transient Three.js objects on load.

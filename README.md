@@ -1,96 +1,123 @@
-# iTowns Stereographic Shader Experiments
+# iTowns Custom Shaders
 
-This repository is an experimentation lab for rendering roads over iTowns globes with custom projection shaders and controllable line-thickness behavior.
+This repository is a focused iTowns showcase for applying custom shader logic to vector data, especially thick line rendering built on `LineSegments2` and `LineMaterial`.
 
-It includes:
-- multi-globe interaction prototypes,
-- stereographic and cone projection experiments,
-- vector road rendering with `LineSegments2` fat lines,
-- per-road width mapping and runtime thickness controls,
-- drag-and-drop GPX path import with persistent path list controls.
+The current demo uses stereographic and cone-style projection variants as one concrete example of that shader pipeline. Those projection ideas are related to earlier work documented in:
+
+- Spur, M. et al., *A Stereographic Multi-Scale Representation for 3D Virtual Globes*, ISPRS Annals, 2022: [https://isprs-annals.copernicus.org/articles/V-4-2022/235/2022/](https://isprs-annals.copernicus.org/articles/V-4-2022/235/2022/)
+
+The broader point of this repository is not the stereographic effect itself, but how to:
+
+- load vector features into iTowns,
+- convert them into fat-line renderables,
+- inject custom shader behavior into the resulting materials,
+- control line width behavior at runtime,
+- reuse the same architecture for roads, vector tiles, and GPX paths.
+
+## What It Demonstrates
+
+- WFS road loading through `FeatureGeometryLayer`
+- vector-tile-friendly fat-line reconstruction patterns
+- drag-and-drop GPX import with persistence and per-path controls
+- screen-space and world-space thickness modes
+- optional projected geometry with source-distance-based width behavior
+- custom shader deformation on vector lines without rewriting the full iTowns pipeline
 
 ## Quick Start
 
 ### Prerequisites
-- Node.js 18+ (recommended)
+
+- Node.js 18+
 - npm
 
 ### Install
+
 ```bash
 npm install
 ```
 
 ### Run locally
+
 ```bash
 npm run dev
 ```
 
-Vite is configured for HTTPS using local cert files (`localhost.pem` / `localhost-key.pem`).  
-If your browser warns about the certificate, trust/accept it for local development.
-Local dev base path is `/`, so URLs are `https://localhost:<port>/` without a repository-name subpath.
+Local dev uses `/` as the base path, so the app runs at:
+
+```text
+https://localhost:<port>/
+```
+
+If `localhost.pem` and `localhost-key.pem` exist, Vite serves over HTTPS with those local certs.
 
 ### Build
+
 ```bash
 npm run build
 ```
 
-Build output is written to `dist/`.
+Build output goes to `dist/`.
 
-## GitHub Pages Deployment (GitHub Actions)
+## GitHub Pages
 
-Deployment is handled automatically by:
-- [deploy-pages.yml](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/.github/workflows/deploy-pages.yml)
+Deployment is handled by [`.github/workflows/deploy-pages.yml`](./.github/workflows/deploy-pages.yml).
 
-Trigger conditions:
-- push to `main`
-- manual run (`workflow_dispatch`)
+The workflow:
 
-What the workflow does:
-1. `npm ci`
-2. `npm run build`
-3. uploads `dist/` as a Pages artifact
-4. deploys with `actions/deploy-pages`
+1. installs dependencies,
+2. runs `npm run build`,
+3. uploads `dist/` as the Pages artifact,
+4. deploys with `actions/deploy-pages`.
 
-Repository setting required once:
-- GitHub repository `Settings -> Pages -> Build and deployment -> Source = GitHub Actions`
+`vite.config.js` derives the production base path from `GITHUB_REPOSITORY`, so repository renames are handled automatically in CI.
 
-## Project Map
+## Project Structure
 
-- [index.html](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/index.html): current default entry page.
-- [main.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/main.js): runtime orchestrator (thin entrypoint).
-- [setupView.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/view/setupView.js): globe view + base layers bootstrap.
-- [state.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/state.js): roads config/registry + persisted render state.
-- [index.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/projection/index.js): projection controller, uniforms, shader patch logic.
-- [renderer.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/renderer.js): roads orchestration (layer + pipeline + UI + frame sync wiring).
-- [fatLinePipeline.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/fatLinePipeline.js): pipeline orchestrator composing geometry/materials/tile-lifecycle modules.
-- [geometry.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/pipeline/geometry.js): segment sanitization, grouping, and source mesh traversal.
-- [materials.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/pipeline/materials.js): line material cache + global thickness/depth state application.
-- [tileLifecycle.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/pipeline/tileLifecycle.js): per-tile anchor lifecycle, rebuild queue, frustum propagation.
-- [layer.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/layer.js): WFS roads source + DEM altitude draping.
-- [frameSync.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/frameSync.js): per-frame uniforms and anchor sync.
-- [ui.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/ui.js): roads settings UI and events.
-- [gpxPaths.js](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/src/roads/gpxPaths.js): GPX drag-drop import, persistence, per-path controls, and fat-line rendering.
-- [VECTOR_LINES_DOSSIER.md](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/VECTOR_LINES_DOSSIER.md): reproducible implementation guide for vector rendering and thickness modes.
+- [`index.html`](./index.html): app entry page
+- [`main.js`](./main.js): thin runtime entrypoint
+- [`src/view/setupView.js`](./src/view/setupView.js): globe setup and base layers
+- [`src/projection/index.js`](./src/projection/index.js): projection controller, shader injection, uniforms, widget
+- [`src/roads/renderer.js`](./src/roads/renderer.js): orchestration for roads, GPX, UI, and frame sync
+- [`src/roads/state.js`](./src/roads/state.js): shared render state and persistence
+- [`src/roads/layer.js`](./src/roads/layer.js): WFS roads source and DEM draping
+- [`src/roads/gpxPaths.js`](./src/roads/gpxPaths.js): GPX import, persistence, path controls, fat-line rendering
+- [`src/roads/pipeline/geometry.js`](./src/roads/pipeline/geometry.js): segment extraction and grouping
+- [`src/roads/pipeline/materials.js`](./src/roads/pipeline/materials.js): material cache and state propagation
+- [`src/roads/pipeline/tileLifecycle.js`](./src/roads/pipeline/tileLifecycle.js): anchor creation, cleanup, rebuild flow
+- [`src/roads/frameSync.js`](./src/roads/frameSync.js): per-frame resolution and shader uniform sync
+- [`src/roads/ui.js`](./src/roads/ui.js): runtime controls
+- [`VECTOR_LINES_DOSSIER.md`](./VECTOR_LINES_DOSSIER.md): standalone porting guide for reproducing the vector-line pipeline in another iTowns project
 
-## Data Sources Used
+## Data Sources In The Demo
 
-- IGN WMTS orthophotos (`ORTHOIMAGERY.ORTHOPHOTOS`)
-- IGN WMTS elevation (`ELEVATION.ELEVATIONGRIDCOVERAGE.SRTM3`)
-- IGN WFS roads (`BDTOPO_V3:troncon_de_route`)
+- IGN WMTS orthophotos: `ORTHOIMAGERY.ORTHOPHOTOS`
+- IGN WMTS elevation: `ELEVATION.ELEVATIONGRIDCOVERAGE.SRTM3`
+- IGN WFS roads: `BDTOPO_V3:troncon_de_route`
 
-## Line Thickness Modes (Summary)
+The architecture is not tied to those sources. The same pipeline can be used with WFS, vector tiles, or locally imported GPX data.
 
-In the roads pipeline (`src/roads/fatLinePipeline.js` + `src/roads/state.js`):
-- Per-road variable width: `RoadGlobalState.useIndividualWidths = true` and `batchId`-based width lookup from road properties (`nature`).
-- Uniform width: `RoadGlobalState.useIndividualWidths = false`.
-- Global scaling: `RoadGlobalState.widthMultiplier`.
-- GPX path scaling: `defaultRoadWidth * RoadGlobalState.widthMultiplier * RoadGlobalState.pathsWidthMultiplier`.
-- Screen-space fixed thickness: `LineMaterial.worldUnits = false`.
-- World-space/perspective thickness: `LineMaterial.worldUnits = true`.
+## Line Thickness Modes
 
-See the full walkthrough in [VECTOR_LINES_DOSSIER.md](/Users/MadMax/Developer/Websites/iTowns/itowns-stereographic-shader/VECTOR_LINES_DOSSIER.md).
+- Variable width per road/path class
+- Uniform width mode
+- Global width multiplier
+- GPX-specific extra width multiplier
+- Screen-space thickness with `worldUnits = false`
+- Perspective/metric thickness with `worldUnits = true`
+- Projected geometry with original-distance thickness preservation via source-distance scaling
 
-## Known Issues / TO DO
+The full implementation recipe is documented in [`VECTOR_LINES_DOSSIER.md`](./VECTOR_LINES_DOSSIER.md).
 
-- Multiple `main-*.js` variants duplicate large sections of logic; shared modules would reduce maintenance risk.
-- Road rendering modules are now split, but they are still tightly coupled to current road schema (`nature`) and should be parameterized for generic reuse.
+## Current Focus
+
+This repository should be read as a compact reference implementation for:
+
+- custom shader injection into vector line materials in iTowns,
+- reusable fat-line handling for globe data,
+- runtime experimentation with projection and line-thickness behavior.
+
+## Known Limitations
+
+- Some experimental `main-*` files still exist outside the main entry path and duplicate older logic.
+- Parts of the road pipeline are still coupled to the current road schema and could be further generalized.
+- The production bundle is fairly large and could benefit from code-splitting.

@@ -22,3 +22,7 @@ node_modules/.vite/
 # Logs
 *.log
 /Experimental
+
+# Codex internal notes
+/CODEX_MEMO.md
+/Logs/CODEX_MEMO.md
