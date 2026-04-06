@@ -118,6 +118,9 @@ This repository should be read as a compact reference implementation for:
 
 ## Known Limitations
 
-- Some experimental `main-*` files still exist outside the main entry path and duplicate older logic.
 - Parts of the road pipeline are still coupled to the current road schema and could be further generalized.
 - The production bundle is fairly large and could benefit from code-splitting.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [`LICENSE`](./LICENSE).

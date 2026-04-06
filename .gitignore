@@ -25,4 +25,8 @@ node_modules/.vite/
 
 # Codex internal notes
 /CODEX_MEMO.md
+/CODEX_SESSION_*.md
+/CODEX_*.log
 /Logs/CODEX_MEMO.md
+/Logs/CODEX_SESSION_*.md
+/.codex/
