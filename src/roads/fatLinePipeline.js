@@ -76,6 +76,7 @@ export function createRoadPipeline(view, roadFatLineRoot, roadLayers) {
         RoadTileAnchors: roadTileAnchors,
         scheduleRoadProcessing: tileLifecycle.scheduleRoadProcessing,
         rebuildAllRoadTiles: tileLifecycle.rebuildAllRoadTiles,
+        clearLoadedRoadData: tileLifecycle.clearAllRoadTiles,
         applyFrustumCullingState: tileLifecycle.applyFrustumCullingState,
         applyRoadVisibilityState,
         triggerUpdate,

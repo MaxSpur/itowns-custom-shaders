@@ -224,6 +224,36 @@ export function createRoadTileLifecycle({
         rebuildPending = false;
     }
 
+    function clearAllRoadTiles() {
+        const entries = Array.from(roadTileAnchors.values());
+        roadTileAnchors.clear();
+
+        for (const entry of entries) {
+            const featureRoot = entry?.featureRoot;
+            if (featureRoot?.userData) {
+                delete featureRoot.userData.roadTileKey;
+                delete featureRoot.userData.roadAnchor;
+                delete featureRoot.userData.fatLines;
+                delete featureRoot.userData.hasQueuedFatLine;
+            }
+
+            cleanupAnchorEntry(entry);
+        }
+
+        for (const fatLine of Array.from(roadFatLines)) {
+            if (!fatLine) continue;
+            if (fatLine.parent) {
+                fatLine.parent.remove(fatLine);
+            }
+            if (fatLine.geometry && typeof fatLine.geometry.dispose === 'function') {
+                fatLine.geometry.dispose();
+            }
+            roadFatLines.delete(fatLine);
+        }
+
+        view.notifyChange(true);
+    }
+
     function applyFrustumCullingState() {
         const frustumCulled = !RoadGlobalState.disableFrustumCulling;
 
@@ -265,6 +295,7 @@ export function createRoadTileLifecycle({
     return {
         scheduleRoadProcessing,
         rebuildAllRoadTiles,
+        clearAllRoadTiles,
         applyFrustumCullingState,
     };
 }

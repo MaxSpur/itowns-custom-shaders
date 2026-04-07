@@ -58,6 +58,78 @@ npm run build
 
 Build output goes to `dist/`.
 
+## How To Use It
+
+When the app starts, it opens near Vincennes, east of Paris. Orthophotos and elevation load first, then the IGN road vectors are converted into fat lines automatically. The UI has three main controls:
+
+- the search field at the top: jumps quickly to a place or address using the built-in iTowns search widget,
+- `Projection Controls` on the left: defines the helper sphere/cone surface and where the custom projection is centered,
+- `Road Settings` on the right: controls how the roads and imported GPX paths are rendered.
+
+The road-panel settings and the imported GPX path list are stored locally in the browser, so they survive a page reload.
+
+### Basic interaction flow
+
+1. Use the search field to jump to an area quickly. The current geocoding endpoint starts returning suggestions from 3 characters onward.
+2. Start with the left panel and place the projection center:
+   click `Place @ center` to move the sphere/cone to the point currently under the camera target, or click `Pick (S)` and then click directly on the globe. You can also hold the `S` key and click on the globe without toggling the button manually.
+3. Switch between `Sphere` and `Cone` to choose the projection surface.
+4. Adjust `View Radius (m)` to control how large the affected area is around the picked center.
+5. Adjust `Intersection` to control how the helper surface intersects the globe.
+6. In cone mode, adjust `Cone height` to stretch or compress the cone. Double-clicking that slider resets it to `1.0x`.
+7. Use `Opacity` to change the visibility of the red helper surface itself. This affects the sphere/cone visualization, not the road line opacity.
+8. Use the right panel to decide whether roads and GPX paths should actually be projected, how thick they should appear, and when to flush already loaded road data.
+
+### Road Settings panel
+
+- `Visibility`: shows or hides all road vectors. This affects the rendered fat-line roads, not the helper sphere/cone and not GPX paths.
+- `Always On Top (Ghost)`: draws roads without normal depth testing so they remain visible above terrain and imagery. Useful for inspection, less realistic for presentation.
+- `Stereographic Projection`: enables or disables the custom projection for roads globally. If this is off, the roads stay on the globe even if the helper sphere/cone is visible.
+- `Cull Backfaces (Sphere)`: hides the outward-facing side of the projected surface so you can look “into” the sphere/cone instead of seeing the far shell.
+- `Disable Frustum Culling`: prevents projected lines from being discarded by normal view-frustum checks. This is useful if projected geometry disappears unexpectedly, but it is more expensive.
+- `Per-Road Widths`: switches between width-by-road-type and a more uniform baseline width.
+- `Width Multiplier`: multiplies all road widths globally.
+- `Elevation Offset`: lifts or lowers the road lines relative to the terrain.
+- `Clear Loaded Roads Cache`: flushes the currently loaded road tiles and the custom fat-line geometry, then reloads road data only for the current area. This is useful after exploring one dense zone and then moving far away.
+- `World Units (Meters)`: changes thickness from screen-like width to world-space/perspective width.
+- `Projected Width Uses Source Distance`: when `World Units` is enabled and projection is active, this keeps projected lines looking as if their thickness were based on their original map distance instead of the projected sphere/cone surface distance. This avoids distant projected lines becoming visually clumped and too thick.
+
+### GPX paths
+
+You can drag `.gpx` files directly onto the page. Each imported path:
+
+- gets its own color,
+- is listed in the `GPX Paths` section,
+- persists across page reloads,
+- can be toggled individually,
+- can be deleted individually.
+
+The GPX-specific controls are:
+
+- `Paths Width Multiplier`: extra width multiplier applied on top of the main road `Width Multiplier`.
+- `Apply Projection To Paths`: lets GPX paths follow or ignore the custom projection independently from the roads.
+
+GPX paths also inherit the main rendering behavior from the road panel where applicable:
+
+- `Always On Top (Ghost)`
+- `Elevation Offset`
+- `World Units (Meters)`
+- `Projected Width Uses Source Distance`
+- `Disable Frustum Culling`
+- `Cull Backfaces (Sphere)`
+
+### What to try first
+
+1. Search for a place or address near the area you want to inspect.
+2. Click `Place @ center`.
+3. Turn on `Stereographic Projection`.
+4. Switch between `Sphere` and `Cone`.
+5. Increase `View Radius (m)` and adjust `Intersection`.
+6. Turn `World Units (Meters)` on and off to compare line thickness behavior.
+7. With `World Units` enabled, toggle `Projected Width Uses Source Distance` to compare projected-distance thickness versus original-distance thickness.
+8. Move far away, click `Clear Loaded Roads Cache`, and let the roads reload around the new area.
+9. Drop in one or two GPX files and compare `Apply Projection To Paths` on and off.
+
 ## GitHub Pages
 
 Deployment is handled by [`.github/workflows/deploy-pages.yml`](./.github/workflows/deploy-pages.yml).
@@ -93,6 +165,7 @@ The workflow:
 - IGN WMTS orthophotos: `ORTHOIMAGERY.ORTHOPHOTOS`
 - IGN WMTS elevation: `ELEVATION.ELEVATIONGRIDCOVERAGE.SRTM3`
 - IGN WFS roads: `BDTOPO_V3:troncon_de_route`
+- IGN GeoPF geocoding completion service: `https://data.geopf.fr/geocodage/completion`
 
 The architecture is not tied to those sources. The same pipeline can be used with WFS, vector tiles, or locally imported GPX data.
 

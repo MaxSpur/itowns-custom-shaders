@@ -63,6 +63,7 @@ export function createRoadsUI({
     rebuildAllRoadTiles,
     applyGlobalStateToMaterials,
     gpxPathsManager,
+    clearLoadedRoadData,
 }) {
     ensureUIPanelStyles();
     const panel = document.createElement('div');
@@ -120,6 +121,13 @@ export function createRoadsUI({
             <input type="range" id="ui-alt" min="-50" max="50" step="0.5" value="${RoadGlobalState.altitudeOffset}">
         </div>
 
+        <div style="display:flex; flex-direction:column; gap:6px; padding-top:6px; border-top:1px solid #4b5066;">
+            <button id="ui-clear-roads-cache" type="button" style="${UI_BUTTON_STYLE}width:100%;text-align:center;">Clear Loaded Roads Cache</button>
+            <div style="font-size:11px; color:#b9bfd6; opacity:0.9;">
+                Flushes loaded road tiles and fat-line geometry, then reloads only the current area.
+            </div>
+        </div>
+
         <label style="${TOGGLE_LABEL_STYLE}">
             <input type="checkbox" id="ui-worldunits" ${RoadGlobalState.useWorldUnits ? 'checked' : ''} style="${checkboxStyle}">
             <span style="${TOGGLE_TEXT_STYLE}">World Units (Meters)</span>
@@ -164,6 +172,7 @@ export function createRoadsUI({
     const widthLabel = document.getElementById('ui-width-val');
     const altSlider = document.getElementById('ui-alt');
     const altLabel = document.getElementById('ui-alt-val');
+    const clearRoadsCacheButton = document.getElementById('ui-clear-roads-cache');
     const worldUnitsInput = document.getElementById('ui-worldunits');
     const worldUnitsSourceDistanceInput = document.getElementById('ui-worldunits-source-distance');
     const pathWidthSlider = document.getElementById('ui-path-width');
@@ -213,6 +222,14 @@ export function createRoadsUI({
     pathWidthSlider.value = RoadGlobalState.pathsWidthMultiplier;
     pathWidthLabel.innerText = RoadGlobalState.pathsWidthMultiplier.toFixed(1) + 'x';
     pathProjectionInput.checked = RoadGlobalState.pathsUseProjection;
+
+    const setAsyncButtonState = (button, busy, idleText, busyText) => {
+        if (!button) return;
+        button.disabled = busy;
+        button.textContent = busy ? busyText : idleText;
+        button.style.opacity = busy ? '0.7' : '1';
+        button.style.cursor = busy ? 'progress' : 'pointer';
+    };
 
     const syncRoadVisibility = () => {
         if (typeof setRoadVisibility === 'function') {
@@ -290,6 +307,32 @@ export function createRoadsUI({
         RoadGlobalState.altitudeOffset = v;
         RoadUIStorage.save({ altitudeOffset: RoadGlobalState.altitudeOffset });
         rebuildAllRoadTiles();
+    });
+
+    clearRoadsCacheButton?.addEventListener('click', async () => {
+        if (typeof clearLoadedRoadData !== 'function' || clearRoadsCacheButton.disabled) {
+            return;
+        }
+
+        setAsyncButtonState(
+            clearRoadsCacheButton,
+            true,
+            'Clear Loaded Roads Cache',
+            'Clearing Roads Cache...',
+        );
+
+        try {
+            await clearLoadedRoadData();
+        } catch (error) {
+            console.error('[RoadUI] Failed to clear loaded roads cache', error);
+        } finally {
+            setAsyncButtonState(
+                clearRoadsCacheButton,
+                false,
+                'Clear Loaded Roads Cache',
+                'Clearing Roads Cache...',
+            );
+        }
     });
 
     worldUnitsInput.addEventListener('change', (e) => {

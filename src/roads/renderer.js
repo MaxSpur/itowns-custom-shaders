@@ -5,12 +5,10 @@ import { createRoadPipeline } from './fatLinePipeline.js';
 import { createGpxPathsManager } from './gpxPaths.js';
 
 export function initRoadRenderer(view, roadFatLineRoot) {
-    const roadsLayer = createRoadLayer(view);
+    let roadsLayer = createRoadLayer(view);
     const roadLayers = [roadsLayer];
     const pipeline = createRoadPipeline(view, roadFatLineRoot, roadLayers);
     const gpxPaths = createGpxPathsManager(view, { roadFatLineRoot });
-
-    roadsLayer.onMeshCreated = (root) => pipeline.scheduleRoadProcessing(root);
 
     const triggerUpdate = () => {
         pipeline.triggerUpdate();
@@ -27,8 +25,75 @@ export function initRoadRenderer(view, roadFatLineRoot) {
         gpxPaths.rebuildAllPaths();
     };
 
-    Promise.all(roadLayers.map((layer) => view.addLayer(layer))).then(() => {
+    const bindRoadLayer = (layer) => {
+        layer.onMeshCreated = (root) => pipeline.scheduleRoadProcessing(root);
+    };
+
+    const walkTileNodes = (nodes, visitor) => {
+        for (const node of nodes || []) {
+            if (!node) continue;
+            visitor(node);
+            if (node.children?.length) {
+                walkTileNodes(node.children, visitor);
+            }
+        }
+    };
+
+    const resetRoadLayerNodeState = (layerId) => {
+        const tileRoots = view.tileLayer?.level0Nodes;
+        if (!tileRoots?.length) {
+            return;
+        }
+
+        walkTileNodes(tileRoots, (node) => {
+            if (node.layerUpdateState?.[layerId]) {
+                delete node.layerUpdateState[layerId];
+            }
+
+            if (node.link?.[layerId]) {
+                delete node.link[layerId];
+            }
+        });
+    };
+
+    const initializeRoadLayer = async (layer) => {
+        bindRoadLayer(layer);
+        await view.addLayer(layer);
         console.log('Roads layer added');
+    };
+
+    let clearLoadedRoadDataPromise = null;
+
+    const clearLoadedRoadData = async () => {
+        if (clearLoadedRoadDataPromise) {
+            return clearLoadedRoadDataPromise;
+        }
+
+        clearLoadedRoadDataPromise = (async () => {
+            const layerId = roadsLayer.id;
+            pipeline.clearLoadedRoadData();
+
+            if (view.getLayerById(layerId)) {
+                view.removeLayer(layerId, true);
+            }
+            resetRoadLayerNodeState(layerId);
+
+            roadsLayer = createRoadLayer(view);
+            roadLayers.splice(0, roadLayers.length, roadsLayer);
+            await initializeRoadLayer(roadsLayer);
+
+            pipeline.applyRoadVisibilityState();
+            applyFrustumCullingState();
+            triggerUpdate();
+            view.notifyChange(true);
+        })().finally(() => {
+            clearLoadedRoadDataPromise = null;
+        });
+
+        return clearLoadedRoadDataPromise;
+    };
+
+    initializeRoadLayer(roadsLayer).then(() => {
         createRoadsUI({
             roadLayers,
             notifyRoadLayers: pipeline.notifyRoadLayers,
@@ -38,10 +103,13 @@ export function initRoadRenderer(view, roadFatLineRoot) {
             rebuildAllRoadTiles,
             applyGlobalStateToMaterials: pipeline.applyGlobalStateToMaterials,
             gpxPathsManager: gpxPaths,
+            clearLoadedRoadData,
         });
         pipeline.applyRoadVisibilityState();
         applyFrustumCullingState();
         triggerUpdate();
+    }).catch((error) => {
+        console.error('[RoadRenderer] Failed to initialize roads layer', error);
     });
 
     attachRoadFrameSync(view, {
@@ -58,5 +126,6 @@ export function initRoadRenderer(view, roadFatLineRoot) {
         roadLayers,
         pipeline,
         gpxPaths,
+        clearLoadedRoadData,
     };
 }
