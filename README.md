@@ -4,7 +4,7 @@ This repository is a focused iTowns showcase for applying custom shader logic to
 
 The current demo uses stereographic and cone-style projection variants as one concrete example of that shader pipeline. Those projection ideas are related to earlier work documented in:
 
-- Spur, M. et al., *A Stereographic Multi-Scale Representation for 3D Virtual Globes*, ISPRS Annals, 2022: [https://isprs-annals.copernicus.org/articles/V-4-2022/235/2022/](https://isprs-annals.copernicus.org/articles/V-4-2022/235/2022/)
+- Spur, M. et al., *Virtual Data Sphere: Inverse Stereographic Projection for Immersive Multi-Perspective Geovisualization*, ISPRS Annals, 2022: [https://isprs-annals.copernicus.org/articles/V-4-2022/235/2022/](https://isprs-annals.copernicus.org/articles/V-4-2022/235/2022/)
 
 The broader point of this repository is not the stereographic effect itself, but how to:
 
