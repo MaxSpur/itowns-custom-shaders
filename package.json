@@ -1,19 +1,35 @@
 {
   "name": "itowns-custom-shaders",
   "version": "1.0.0",
-  "description": "",
+  "description": "Focused iTowns demo for shader-driven projection of fat vector lines and GPX paths on a globe.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run build",
     "dev": "vite",
     "build": "vite build",
     "start": "vite preview",
     "deploy:pages": "echo \"Deployment is handled by GitHub Actions (.github/workflows/deploy-pages.yml)\""
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "itowns",
+    "threejs",
+    "webgl",
+    "geospatial",
+    "shaders",
+    "vector-lines",
+    "gpx"
+  ],
+  "author": "Maxim Spur",
   "license": "Apache-2.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MaxSpur/itowns-stereographic-shader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MaxSpur/itowns-stereographic-shader/issues"
+  },
+  "homepage": "https://github.com/MaxSpur/itowns-stereographic-shader#readme",
   "dependencies": {
     "itowns": "^2.46.0"
   },

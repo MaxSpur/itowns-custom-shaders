@@ -14,6 +14,10 @@ The broader point of this repository is not the stereographic effect itself, but
 - control line width behavior at runtime,
 - reuse the same architecture for roads, vector tiles, and GPX paths.
 
+![Demo preview placeholder](./media/repo-preview.gif)
+
+Replace [media/repo-preview.gif](./media/repo-preview.gif) with your own demo capture when you are ready.
+
 ## What It Demonstrates
 
 - WFS road loading through `FeatureGeometryLayer`
@@ -57,6 +61,14 @@ npm run build
 ```
 
 Build output goes to `dist/`.
+
+### Smoke test
+
+```bash
+npm test
+```
+
+This currently runs a production build as the minimal repository health check and CI gate.
 
 ## How To Use It
 
@@ -145,6 +157,9 @@ The workflow:
 
 ## Project Structure
 
+- [`.github/workflows/ci.yml`](./.github/workflows/ci.yml): minimal CI workflow that runs the repository smoke test on pushes and pull requests
+- [`media/repo-preview.gif`](./media/repo-preview.gif): placeholder README preview asset you can replace later
+- [`favicon.svg`](./favicon.svg): placeholder favicon for the demo
 - [`index.html`](./index.html): app entry page
 - [`main.js`](./main.js): thin runtime entrypoint
 - [`src/view/setupView.js`](./src/view/setupView.js): globe setup and base layers

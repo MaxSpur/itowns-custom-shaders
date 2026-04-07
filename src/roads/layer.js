@@ -2,6 +2,8 @@ import * as itowns from 'itowns';
 
 import { ROAD_COLOR, registerRoadFeature } from './state.js';
 
+const DEV_ROAD_ALTITUDE_WARNINGS = Boolean(import.meta.env?.DEV);
+
 export function createRoadLayer(view) {
     const roadsSource = new itowns.WFSSource({
         url: 'https://data.geopf.fr/wfs/ows?',
@@ -18,6 +20,7 @@ export function createRoadLayer(view) {
     };
 
     function logAltitudeIssue(reason, props) {
+        if (!DEV_ROAD_ALTITUDE_WARNINGS) return;
         if (altitudeDebug.logged >= altitudeDebug.max) return;
         altitudeDebug.logged++;
         console.warn(`[RoadAltitude] ${reason}`, {

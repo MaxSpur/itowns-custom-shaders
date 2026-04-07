@@ -83,13 +83,6 @@ function makeSphereController(view, {
     color = 0xff0000,
     coneHeightMul = 1.0,
 } = {}) {
-    const DEBUG_SPHERE_CTL = false;
-    const logSphere = (...args) => {
-        if (!DEBUG_SPHERE_CTL) return;
-        console.log('[SphereCtl]', ...args);
-    };
-
-
     // external clamp/diagnostic cylinder (the green one from addClampDebugCylinder)
     let externalClampCylinder = null;
     let visualOpacity = THREE.MathUtils.clamp(+opacity || 0.5, 0, 1);
@@ -109,8 +102,6 @@ function makeSphereController(view, {
         material.opacity = alpha;
         material.needsUpdate = true;
     }
-
-    logSphere('init controller', { radius, offset01, opacity, color });
 
     // --- Sphere mesh ---------------------------------------------------------
     const sphereGeom = new THREE.SphereGeometry(1, 32, 16);
@@ -149,13 +140,8 @@ function makeSphereController(view, {
 
     function updateTransform() {
         if (!state.hasGround) {
-            logSphere('updateTransform skipped, no ground yet');
             return;
         }
-        logSphere('updateTransform begin', {
-            viewRadius: state.viewRadius,
-            intersection01: state.intersection01,
-        });
 
         const normal = state.groundECEF.clone().normalize();
         const G = state.groundECEF; // ground intersection center
@@ -291,19 +277,16 @@ function makeSphereController(view, {
         setGroundFromWorld(vec3) {
             state.groundECEF.copy(vec3);
             state.hasGround = true;
-            logSphere('setGroundFromWorld', vec3.toArray());
             updateTransform();
         },
         // "Radius" slider → view radius (intersection radius on ground)
         setRadius(meters) {
             state.viewRadius = Math.max(1, +meters);
-            logSphere('setRadius', state.viewRadius);
             updateTransform();
         },
         // "Offset" slider → intersection parameter (angle)
         setOffset01(t) {
             state.intersection01 = Math.min(1, Math.max(0, +t));
-            logSphere('setOffset01', state.intersection01);
             updateTransform();
         },
         setOpacity(a) {
@@ -315,26 +298,22 @@ function makeSphereController(view, {
             if (externalClampCylinder && externalClampCylinder.material) {
                 applyOpacityToMaterial(externalClampCylinder.material, visualOpacity);
             }
-            logSphere('setOpacity', clamped);
             view.notifyChange(true);
         },
         setColor(hex) {
             sphereMat.color.set(hex);
             // coneMat.color.set(hex);
-            logSphere('setColor', hex);
             view.notifyChange(true);
         },
         setConeHeightMul(mul) {
             const k = THREE.MathUtils.clamp(+mul || 1.0, CONE_HEIGHT_MIN, CONE_HEIGHT_MAX);
             state.coneHeightMul = k;
-            logSphere('setConeHeightMul', k);
             updateTransform();
         },
         // setDisplayMode(mode) {
         //     displayMode = mode === 'cone' ? 'cone' : 'sphere';
         //     sphereMesh.visible = displayMode === 'sphere';
         //     coneMesh.visible = displayMode === 'cone';
-        //     logSphere('setDisplayMode', displayMode);
         //     view.notifyChange(true);
         // },
         setDisplayMode(mode) {
@@ -350,7 +329,6 @@ function makeSphereController(view, {
             // Tell the shader which surface to use
             StereoUniforms.uProjectionSurface.value = (displayMode === 'cone') ? 1.0 : 0.0;
 
-            logSphere('setDisplayMode', displayMode);
             view.notifyChange(true);
         },
         // NEW: allow attaching the green debug cylinder from outside
@@ -399,17 +377,12 @@ function addClampDebugCylinder(view) {
     view.scene.add(mesh);
     view.notifyChange(true);
 
-    if (typeof window !== 'undefined') {
-        window.DebugClampCylinder = mesh;
-    }
-
     // Attach to sphere controller so it follows all updates
     if (SphereProjectionState.controller &&
         typeof SphereProjectionState.controller.attachClampCylinder === 'function') {
         SphereProjectionState.controller.attachClampCylinder(mesh);
     }
 
-    console.log('[Debug] Clamp cone added');
 }
 
 function createSphereWidget(view, viewerDiv, sphereCtl, init = { radius: 1000, offset01: 1.0, opacity: 0.5, coneHeightMul: 1.0 }) {

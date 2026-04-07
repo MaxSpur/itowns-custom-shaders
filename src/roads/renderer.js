@@ -59,7 +59,6 @@ export function initRoadRenderer(view, roadFatLineRoot) {
     const initializeRoadLayer = async (layer) => {
         bindRoadLayer(layer);
         await view.addLayer(layer);
-        console.log('Roads layer added');
     };
 
     let clearLoadedRoadDataPromise = null;
