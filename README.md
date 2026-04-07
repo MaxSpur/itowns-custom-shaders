@@ -2,6 +2,8 @@
 
 This repository is a focused iTowns showcase for applying custom shader logic to vector data, especially thick line rendering built on `LineSegments2` and `LineMaterial`.
 
+![Demo preview (short)](./media/repo-preview.gif)
+
 At a glance:
 
 - custom shader deformation on vector lines in iTowns,
@@ -29,11 +31,10 @@ If you are here to reuse the implementation rather than just run the demo, start
 - [`src/roads/renderer.js`](./src/roads/renderer.js) for the runtime orchestration layer,
 - [`src/roads/pipeline`](./src/roads/pipeline) for the geometry, materials, and tile lifecycle split.
 
-## Preview
 
-![Demo preview placeholder](./media/repo-preview.gif)
-
-<video src="./media/repo-demo.mp4" controls muted playsinline width="900"></video>
+<video width="900" controls muted playsinline>
+  <source src="./media/repo-demo.mp4" type="video/mp4">
+</video>
 
 ## What It Demonstrates
 
