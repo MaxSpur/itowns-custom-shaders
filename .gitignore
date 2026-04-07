@@ -30,3 +30,4 @@ node_modules/.vite/
 /Logs/CODEX_MEMO.md
 /Logs/CODEX_SESSION_*.md
 /.codex/
+/media/sources

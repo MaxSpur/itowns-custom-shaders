@@ -2,6 +2,14 @@
 
 This repository is a focused iTowns showcase for applying custom shader logic to vector data, especially thick line rendering built on `LineSegments2` and `LineMaterial`.
 
+At a glance:
+
+- custom shader deformation on vector lines in iTowns,
+- WFS road loading plus drag-and-drop GPX overlays,
+- screen-space and world-space thickness modes,
+- runtime stereographic and cone-style projection controls,
+- a compact codebase intended to be read, adapted, and reused.
+
 The current demo uses stereographic and cone-style projection variants as one concrete example of that shader pipeline. Those projection ideas are related to earlier work documented in:
 
 - Spur, M. et al., *Virtual Data Sphere: Inverse Stereographic Projection for Immersive Multi-Perspective Geovisualization*, ISPRS Annals, 2022: [https://isprs-annals.copernicus.org/articles/V-4-2022/235/2022/](https://isprs-annals.copernicus.org/articles/V-4-2022/235/2022/)
@@ -14,9 +22,18 @@ The broader point of this repository is not the stereographic effect itself, but
 - control line width behavior at runtime,
 - reuse the same architecture for roads, vector tiles, and GPX paths.
 
+If you are here to reuse the implementation rather than just run the demo, start with:
+
+- [`VECTOR_LINES_DOSSIER.md`](./VECTOR_LINES_DOSSIER.md) for the portable implementation recipe,
+- [`src/projection/index.js`](./src/projection/index.js) for the projection controller and shader injection,
+- [`src/roads/renderer.js`](./src/roads/renderer.js) for the runtime orchestration layer,
+- [`src/roads/pipeline`](./src/roads/pipeline) for the geometry, materials, and tile lifecycle split.
+
+## Preview
+
 ![Demo preview placeholder](./media/repo-preview.gif)
 
-Replace [media/repo-preview.gif](./media/repo-preview.gif) with your own demo capture when you are ready.
+<video src="./media/repo-demo.mp4" controls muted playsinline width="900"></video>
 
 ## What It Demonstrates
 
@@ -69,6 +86,8 @@ npm test
 ```
 
 This currently runs a production build as the minimal repository health check and CI gate.
+
+The repository also includes a minimal CI workflow at [`.github/workflows/ci.yml`](./.github/workflows/ci.yml), so pull requests and pushes to `main` run the same smoke check automatically.
 
 ## How To Use It
 
@@ -155,6 +174,15 @@ The workflow:
 
 `vite.config.js` derives the production base path from `GITHUB_REPOSITORY`, so repository renames are handled automatically in CI.
 
+## Replacing Placeholder Media
+
+Before publishing screenshots or sharing the repo widely, you will probably want to replace:
+
+- [`media/repo-preview.gif`](./media/repo-preview.gif): README preview animation,
+- [`favicon.svg`](./favicon.svg): browser tab icon.
+
+Both are simple placeholders and are safe to overwrite without changing code paths or README links.
+
 ## Project Structure
 
 - [`.github/workflows/ci.yml`](./.github/workflows/ci.yml): minimal CI workflow that runs the repository smoke test on pushes and pull requests
@@ -174,6 +202,16 @@ The workflow:
 - [`src/roads/frameSync.js`](./src/roads/frameSync.js): per-frame resolution and shader uniform sync
 - [`src/roads/ui.js`](./src/roads/ui.js): runtime controls
 - [`VECTOR_LINES_DOSSIER.md`](./VECTOR_LINES_DOSSIER.md): standalone porting guide for reproducing the vector-line pipeline in another iTowns project
+
+## Reuse Guide
+
+If you want to lift pieces of this repository into another project:
+
+- use [`src/roads/layer.js`](./src/roads/layer.js) as the example of WFS vector ingestion and DEM-based draping,
+- use [`src/roads/pipeline/geometry.js`](./src/roads/pipeline/geometry.js) and [`src/roads/pipeline/materials.js`](./src/roads/pipeline/materials.js) as the fat-line conversion and material-cache core,
+- use [`src/roads/pipeline/tileLifecycle.js`](./src/roads/pipeline/tileLifecycle.js) if you need explicit control over tile-attached custom geometry,
+- use [`src/ui/search.js`](./src/ui/search.js) if you want a minimal iTowns-native place search integration with the GeoPF geocoder,
+- use [`src/roads/gpxPaths.js`](./src/roads/gpxPaths.js) if you need a small, local-first GPX import workflow.
 
 ## Data Sources In The Demo
 
@@ -196,18 +234,10 @@ The architecture is not tied to those sources. The same pipeline can be used wit
 
 The full implementation recipe is documented in [`VECTOR_LINES_DOSSIER.md`](./VECTOR_LINES_DOSSIER.md).
 
-## Current Focus
-
-This repository should be read as a compact reference implementation for:
-
-- custom shader injection into vector line materials in iTowns,
-- reusable fat-line handling for globe data,
-- runtime experimentation with projection and line-thickness behavior.
-
 ## Known Limitations
 
 - Parts of the road pipeline are still coupled to the current road schema and could be further generalized.
-- The production bundle is fairly large and could benefit from code-splitting.
+- Place search suggestions start at 3 characters because of the current external geocoding endpoint behavior.
 
 ## License
 
