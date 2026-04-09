@@ -171,19 +171,9 @@ The workflow:
 
 `vite.config.js` derives the production base path from `GITHUB_REPOSITORY`, so repository renames are handled automatically in CI.
 
-## Replacing Placeholder Media
-
-Before publishing screenshots or sharing the repo widely, you will probably want to replace:
-
-- [`media/repo-preview.gif`](./media/repo-preview.gif): README preview animation,
-- [`favicon.svg`](./favicon.svg): browser tab icon.
-
-Both are simple placeholders and are safe to overwrite without changing code paths or README links.
-
 ## Project Structure
 
 - [`.github/workflows/ci.yml`](./.github/workflows/ci.yml): minimal CI workflow that runs the repository smoke test on pushes and pull requests
-- [`media/repo-preview.gif`](./media/repo-preview.gif): placeholder README preview asset you can replace later
 - [`favicon.svg`](./favicon.svg): placeholder favicon for the demo
 - [`index.html`](./index.html): app entry page
 - [`main.js`](./main.js): thin runtime entrypoint
