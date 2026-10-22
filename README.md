@@ -45,7 +45,7 @@ If you are here to reuse the implementation rather than just run the demo, start
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 22.23.4 or a newer supported release with current security fixes
 - npm
 
 ### Install
